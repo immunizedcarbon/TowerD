@@ -1,0 +1,120 @@
+package dev.decimen.optical;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
+import android.Manifest;
+import android.app.ActivityManager;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.ParcelFileDescriptor;
+import android.webkit.WebView;
+
+import androidx.test.core.app.ActivityScenario;
+import androidx.test.core.app.ApplicationProvider;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.uiautomator.UiDevice;
+
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
+
+@RunWith(AndroidJUnit4.class)
+public final class DeviceCompatibilityTest {
+    private static final String ROOT = "https://appassets.androidplatform.net/assets/www/";
+
+    @Test
+    public void hardenedApplicationRunsOnDeclaredDeviceProfile() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        String profile = InstrumentationRegistry.getArguments().getString("profile", "generic");
+        int expectedSdk = Integer.parseInt(
+                InstrumentationRegistry.getArguments().getString("expected_sdk", String.valueOf(Build.VERSION.SDK_INT)));
+        int expectedWidth = Integer.parseInt(
+                InstrumentationRegistry.getArguments().getString("expected_width", "0"));
+        int expectedHeight = Integer.parseInt(
+                InstrumentationRegistry.getArguments().getString("expected_height", "0"));
+
+        assertEquals("The device matrix must run the intended Android API", expectedSdk, Build.VERSION.SDK_INT);
+        assertEquals("The final manifest must not have network permission",
+                PackageManager.PERMISSION_DENIED,
+                context.getPackageManager().checkPermission(Manifest.permission.INTERNET, context.getPackageName()));
+        assertNotNull("A current System WebView implementation is required", WebView.getCurrentWebViewPackage());
+
+        grantCameraPermission(context.getPackageName());
+        assertEquals(PackageManager.PERMISSION_GRANTED,
+                context.checkSelfPermission(Manifest.permission.CAMERA));
+
+        Intent intent = new Intent(context, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                .putExtra(MainActivity.EXTRA_TEST_PROFILE, profile);
+
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(intent)) {
+            String expectedModel = switch (profile) {
+                case "pixel9a" -> "Pixel%209a";
+                case "pixel8a" -> "Pixel%208a";
+                case "tabs5e" -> "SM-T725";
+                default -> "";
+            };
+
+            String userAgent = waitForJs(scenario, "navigator.userAgent", value ->
+                    value.contains("DecimenDevice/") && value.contains(expectedModel), 30_000);
+            assertTrue(userAgent, userAgent.contains("/" + expectedSdk));
+
+            String selfTest = waitForJs(scenario,
+                    "document.getElementById('selftest-status')?.textContent || ''",
+                    value -> value.contains("SYSTEMCHECK BESTANDEN"), 90_000);
+            assertTrue(selfTest, selfTest.contains("SYSTEMCHECK BESTANDEN"));
+
+            eval(scenario, "(window.__decimenNetwork='pending',"
+                    + "fetch('https://example.com/').then(()=>window.__decimenNetwork='UNSAFE')"
+                    + ".catch(()=>window.__decimenNetwork='BLOCKED'),'started')");
+            String network = waitForJs(scenario, "window.__decimenNetwork || ''",
+                    value -> value.contains("BLOCKED") || value.contains("UNSAFE"), 15_000);
+            assertTrue("External network access must remain blocked: " + network,
+                    network.contains("BLOCKED"));
+
+            load(scenario, ROOT + "send/index.html");
+            String sender = waitForJs(scenario,
+                    "JSON.stringify({ready:document.readyState,canvas:document.getElementById('qr')?.width||0,"
+                            + "status:document.getElementById('specs')?.textContent||'',"
+                            + "cls:document.getElementById('specs')?.className||''})",
+                    value -> value.contains("\\\"canvas\\\":") && value.contains("status ok")
+                            && !value.contains("Fehler"), 90_000);
+            int canvasWidth = Integer.parseInt(sender.replaceAll(".*\\\\\\\"canvas\\\\\\\":([0-9]+).*", "$1"));
+            assertTrue("Sender must render a substantial QR code: " + sender, canvasWidth > 100);
+
+            load(scenario, ROOT + "receive/index.html");
+            waitForJs(scenario, "document.readyState", value -> value.contains("complete"), 30_000);
+            eval(scenario, "(document.getElementById('start')?.click(),'clicked')");
+            String camera = waitForJs(scenario,
+                    "JSON.stringify({status:document.getElementById('stats')?.textContent||'',"
+                            + "stream:!!document.getElementById('video')?.srcObject,"
+                            + "width:document.getElementById('video')?.videoWidth||0})",
+                    value -> value.contains("\\\"stream\\\":true")
+                            && !value.contains("konnte nicht gestartet"), 60_000);
+            assertTrue("Receiver camera must start: " + camera, camera.contains("\\\"stream\\\":true"));
+
+            UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+            if (expectedWidth > 0 && expectedHeight > 0) {
+                int actualLong = Math.max(device.getDisplayWidth(), device.getDisplayHeight());
+                int expectedLong = Math.max(expectedWidth, expectedHeight);
+                assertTrue("Configured display should approximate the target device: " + actualLong,
+                        Math.abs(actualLong - expectedLong) <= 160);
+            }
+            captureEvidence(context, device, profile);
+            logRuntimeEvidence(context, device, profile, expectedWidth, expectedHeight);
+        }
+    }
+
