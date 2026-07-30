@@ -1,0 +1,331 @@
+name: Final Decimen device matrix
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: final-decimen-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GRADLE_VERSION: '9.5.0'
+  ANDROID_PLATFORM: '36'
+  ANDROID_BUILD_TOOLS: '36.0.0'
+
+jobs:
+  build:
+    name: Build audited release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble reviewed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p project
+          git clone --filter=blob:none https://github.com/bashalarmistalt/decimen-optical-transfer.git project/web
+          git -C project/web checkout 13e86c26a187882637015b9267bb0361d67f1033
+          cat web-hardening.patch.gz.b64.part* | base64 --decode | gzip -dc > "$RUNNER_TEMP/web-hardening.patch"
+          echo '6a0e0809e627d544882eb4d72bffad76b6a12b4ca6cf4205f283c1646923098d  '"$RUNNER_TEMP/web-hardening.patch" | sha256sum -c -
+          git -C project/web apply --check "$RUNNER_TEMP/web-hardening.patch"
+          git -C project/web apply "$RUNNER_TEMP/web-hardening.patch"
+          git -C project/web apply --check "$GITHUB_WORKSPACE/web-lifecycle-fix.patch"
+          git -C project/web apply "$GITHUB_WORKSPACE/web-lifecycle-fix.patch"
+
+          cp -a android-src project/android
+          mkdir -p project/android/app/src/main/java/dev/decimen/optical
+          mkdir -p project/android/app/src/androidTest/java/dev/decimen/optical
+          cat android-src-parts/MainActivity.java.part* > project/android/app/src/main/java/dev/decimen/optical/MainActivity.java
+          cat android-src-parts/DeviceCompatibilityTest.java.part* > project/android/app/src/androidTest/java/dev/decimen/optical/DeviceCompatibilityTest.java
+          echo '0cb55a214feec2c2c064b8b27e0f8e99ac2e3f452d2656972d7a4da513ca0352  project/android/app/src/main/java/dev/decimen/optical/MainActivity.java' | sha256sum -c -
+          cp VERIFICATION.md project/VERIFICATION.md
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: project/web/package-lock.json
+
+      - name: Type-check, build and dependency audit
+        working-directory: project/web
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm run check
+          npm run build
+          npm audit --json > ../npm-audit.json || true
+          node - <<'NODE'
+          const report = require('../npm-audit.json');
+          const v = report.metadata?.vulnerabilities ?? {};
+          console.log('npm audit:', v);
+          if ((v.low||0)+(v.moderate||0)+(v.high||0)+(v.critical||0)) process.exit(1);
+          NODE
+
+      - name: Static security scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          pipx run semgrep scan --config p/default --json \
+            --exclude project/web/node_modules --exclude project/web/dist \
+            project/web project/android/app/src > project/semgrep.json
+          python - <<'PY'
+          import json
+          r = json.load(open('project/semgrep.json', encoding='utf-8'))
+          print('Semgrep findings:', len(r.get('results', [])))
+          print('Semgrep errors:', len(r.get('errors', [])))
+          if r.get('errors'):
+              raise SystemExit(1)
+          PY
+
+      - name: Package offline assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf project/android/app/src/main/assets/www
+          mkdir -p project/android/app/src/main/assets/www
+          cp -a project/web/dist/. project/android/app/src/main/assets/www/
+          test -s project/android/app/src/main/assets/www/index.html
+          test -s project/android/app/src/main/assets/www/send/index.html
+          test -s project/android/app/src/main/assets/www/receive/index.html
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}"
+
+      - name: Generate isolated release key
+        shell: bash
+        run: |
+          set -euo pipefail
+          PASSWORD=$(openssl rand -hex 24)
+          echo "::add-mask::$PASSWORD"
+          KEYSTORE="$RUNNER_TEMP/decimen-release.jks"
+          keytool -genkeypair -keystore "$KEYSTORE" -storepass "$PASSWORD" -keypass "$PASSWORD" \
+            -alias decimen -keyalg RSA -keysize 3072 -sigalg SHA256withRSA -validity 10000 \
+            -dname "CN=Decimen Verified Release, OU=Device Matrix, O=Open Source, C=DE"
+          echo "DECIMEN_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "DECIMEN_STORE_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+          echo "DECIMEN_KEY_ALIAS=decimen" >> "$GITHUB_ENV"
+          echo "DECIMEN_KEY_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Lint and compile release plus tests
+        working-directory: project/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --stacktrace \
+            :app:lintRelease \
+            :app:assembleDebug \
+            :app:assembleDebugAndroidTest \
+            :app:assembleRelease
+
+      - name: Verify APK policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=project/android/app/build/outputs/apk/release/app-release.apk
+          DEBUG=project/android/app/build/outputs/apk/debug/app-debug.apk
+          TEST=project/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          test -s "$APK" && test -s "$DEBUG" && test -s "$TEST"
+          BT="$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}"
+          AZ="$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | tee project/apksigner-report.txt
+          "$AZ" apk summary "$APK" | tee project/apk-summary.txt
+          "$AZ" manifest permissions "$APK" | tee project/manifest-permissions.txt
+          "$AZ" manifest debuggable "$APK" | tee project/manifest-debuggable.txt
+          "$AZ" manifest min-sdk "$APK" | tee project/manifest-min-sdk.txt
+          "$AZ" manifest target-sdk "$APK" | tee project/manifest-target-sdk.txt
+          grep -q android.permission.CAMERA project/manifest-permissions.txt
+          ! grep -q android.permission.INTERNET project/manifest-permissions.txt
+          grep -qx false project/manifest-debuggable.txt
+          grep -qx 35 project/manifest-min-sdk.txt
+          grep -qx 36 project/manifest-target-sdk.txt
+          ! unzip -Z1 "$APK" | grep -q '^lib/'
+          unzip -Z1 "$APK" | grep -q 'assets/www/index.html'
+          unzip -Z1 "$APK" | grep -q 'assets/www/send/index.html'
+          unzip -Z1 "$APK" | grep -q 'assets/www/receive/index.html'
+          unzip -Z1 "$APK" | grep -Eq 'zxing_reader.*\.wasm'
+
+      - name: Prepare verified artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/reports
+          cp project/android/app/build/outputs/apk/release/app-release.apk artifact/Decimen-Optical-Transfer-0.2.0-hardened.apk
+          cp project/android/app/build/outputs/apk/debug/app-debug.apk artifact/app-debug.apk
+          cp project/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk artifact/app-debug-androidTest.apk
+          cp project/VERIFICATION.md artifact/
+          cp project/npm-audit.json project/semgrep.json project/apksigner-report.txt \
+             project/apk-summary.txt project/manifest-permissions.txt project/manifest-debuggable.txt \
+             project/manifest-min-sdk.txt project/manifest-target-sdk.txt artifact/reports/
+          cp -a project/android/app/build/reports/lint-results-release.* artifact/reports/ || true
+          (cd artifact && sha256sum Decimen-Optical-Transfer-0.2.0-hardened.apk > SHA256SUMS.txt)
+          cat artifact/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decimen-final-build
+          path: artifact
+          if-no-files-found: error
+          retention-days: 7
+
+  device:
+    name: ${{ matrix.label }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Pixel 9a · Android 16
+            profile: pixel9a
+            api: '36'
+            image: google_apis
+            width: '1080'
+            height: '2424'
+            density: '422'
+            ram: '4096'
+            rotation: '0'
+          - label: Pixel 8a · Android 16
+            profile: pixel8a
+            api: '36'
+            image: google_apis
+            width: '1080'
+            height: '2400'
+            density: '430'
+            ram: '4096'
+            rotation: '0'
+          - label: Galaxy Tab S5e LTE · LineageOS 22.2 / Android 15
+            profile: tabs5e
+            api: '35'
+            image: default
+            width: '1600'
+            height: '2560'
+            density: '288'
+            ram: '3072'
+            rotation: '1'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: decimen-final-build
+          path: artifact
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Boot target-shaped emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null
+          IMAGE="system-images;android-${{ matrix.api }};${{ matrix.image }};x86_64"
+          sdkmanager platform-tools emulator "$IMAGE"
+          sudo chmod 666 /dev/kvm || true
+          echo no | avdmanager create avd --force --name decimen-test --package "$IMAGE" --device pixel_8
+          cat >> "$HOME/.android/avd/decimen-test.avd/config.ini" <<EOF
+          hw.cpu.ncore=4
+          hw.keyboard=yes
+          hw.gpu.enabled=yes
+          hw.gpu.mode=swiftshader_indirect
+          hw.camera.back=virtualscene
+          hw.camera.front=none
+          disk.dataPartition.size=8G
+          skin.dynamic=yes
+          showDeviceFrame=no
+          hw.ramSize=${{ matrix.ram }}
+          EOF
+          nohup emulator @decimen-test -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
+            -gpu swiftshader_indirect -camera-back virtualscene -camera-front none \
+            -memory ${{ matrix.ram }} -cores 4 -no-metrics > emulator.log 2>&1 &
+          adb wait-for-device
+          for i in $(seq 1 240); do
+            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break
+            [ "$i" = 240 ] && { cat emulator.log; exit 1; }
+            sleep 2
+          done
+          adb shell input keyevent 82 || true
+          adb shell wm size '${{ matrix.width }}x${{ matrix.height }}'
+          adb shell wm density '${{ matrix.density }}'
+          adb shell settings put system accelerometer_rotation 0
+          adb shell settings put system user_rotation '${{ matrix.rotation }}'
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell getprop > device-properties.txt
+
+      - name: Run compatibility and security instrumentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb logcat -c
+          adb install -r -t artifact/app-debug.apk
+          adb install -r -t artifact/app-debug-androidTest.apk
+          adb shell pm grant dev.decimen.optical.debug android.permission.CAMERA
+          timeout 600 adb shell am instrument -w -r \
+            -e class dev.decimen.optical.DeviceCompatibilityTest \
+            -e profile '${{ matrix.profile }}' \
+            -e expected_sdk '${{ matrix.api }}' \
+            -e expected_width '${{ matrix.width }}' \
+            -e expected_height '${{ matrix.height }}' \
+            dev.decimen.optical.debug.test/androidx.test.runner.AndroidJUnitRunner | tee instrumentation.txt
+          grep -q '^OK (' instrumentation.txt
+
+      - name: Smoke-test signed release
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb uninstall dev.decimen.optical.debug.test || true
+          adb uninstall dev.decimen.optical.debug || true
+          adb install artifact/Decimen-Optical-Transfer-0.2.0-hardened.apk
+          adb shell am start -W -n dev.decimen.optical/.MainActivity | tee release-launch.txt
+          sleep 15
+          test -n "$(adb shell pidof dev.decimen.optical | tr -d '\r')"
+          adb shell dumpsys package dev.decimen.optical > release-package.txt
+          grep -q android.permission.CAMERA release-package.txt
+          ! grep -q android.permission.INTERNET release-package.txt
+          adb exec-out screencap -p > release-${{ matrix.profile }}.png
+
+      - name: Collect evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          adb logcat -d -v threadtime > evidence/logcat.txt || true
+          adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
+          adb pull /sdcard/window.xml evidence/window.xml || true
+          adb pull /sdcard/Android/data/dev.decimen.optical.debug/files evidence/debug-files || true
+          cp instrumentation.txt release-launch.txt release-package.txt release-${{ matrix.profile }}.png \
+             device-properties.txt emulator.log evidence/ 2>/dev/null || true
+          ! grep -E 'FATAL EXCEPTION.*dev\.decimen|Process: dev\.decimen.*FATAL' evidence/logcat.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-${{ matrix.profile }}
+          path: evidence
+          if-no-files-found: warn
+          retention-days: 7
