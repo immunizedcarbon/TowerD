@@ -1,0 +1,170 @@
+        webView.setBackgroundColor(Color.TRANSPARENT);
+        webView.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        webView.setOverScrollMode(WebView.OVER_SCROLL_NEVER);
+        webView.setHapticFeedbackEnabled(false);
+
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setBlockNetworkLoads(true);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        settings.setDomStorageEnabled(false);
+        settings.setDatabaseEnabled(false);
+        settings.setGeolocationEnabled(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setSupportMultipleWindows(false);
+        settings.setMediaPlaybackRequiresUserGesture(true);
+        settings.setSafeBrowsingEnabled(true);
+        settings.setSaveFormData(false);
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+        settings.setTextZoom(100);
+        settings.setDefaultTextEncodingName("utf-8");
+        settings.setUserAgentString(settings.getUserAgentString() + " DecimenDevice/"
+                + Uri.encode(resolveDeviceModel()) + "/" + android.os.Build.VERSION.SDK_INT);
+
+        CookieManager.getInstance().setAcceptCookie(false);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
+
+        webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) ->
+                Toast.makeText(this, "Direkte Downloads sind gesperrt. Verwende den verifizierten Speicherdialog.",
+                        Toast.LENGTH_LONG).show());
+
+        webView.setWebViewClient(new LockedWebViewClient());
+        webView.setWebChromeClient(new LockedWebChromeClient());
+        installSaveBridge();
+    }
+
+    private void installSaveBridge() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            Log.e(TAG, "Origin-scoped WebMessage listener unavailable");
+            return;
+        }
+        Set<String> allowedOrigins = Collections.singleton(APP_ORIGIN);
+        WebViewCompat.addWebMessageListener(webView, "decimenNative", allowedOrigins,
+                new WebViewCompat.WebMessageListener() {
+                    @Override
+                    public void onPostMessage(@NonNull WebView view,
+                                              @NonNull WebMessageCompat message,
+                                              @NonNull Uri sourceOrigin,
+                                              boolean isMainFrame,
+                                              @NonNull JavaScriptReplyProxy replyProxy) {
+                        if (!isMainFrame || !isTrustedOrigin(sourceOrigin) || !isReceivePage()) return;
+                        String data = message.getData();
+                        if (data == null || data.length() > 400_000) {
+                            rejectPendingSave("Ungültige Nachrichtengröße");
+                            return;
+                        }
+                        handleSaveMessage(data);
+                    }
+                });
+    }
+
+    private void handleSaveMessage(String raw) {
+        try {
+            JSONObject object = new JSONObject(raw);
+            String type = object.optString("type", "");
+            switch (type) {
+                case "save-begin" -> beginSave(object);
+                case "save-chunk" -> appendSaveChunk(object);
+                case "save-end" -> finishSave(object);
+                case "save-cancel" -> rejectPendingSave("Speichervorgang zurückgesetzt");
+                default -> rejectPendingSave("Unbekannter Nachrichtentyp");
+            }
+        } catch (JSONException | IllegalArgumentException error) {
+            rejectPendingSave("Ungültige Speichernachricht");
+        }
+    }
+
+    private void beginSave(JSONObject object) throws JSONException {
+        if (pendingSave != null || readySave != null) throw new IllegalArgumentException("Save already active");
+        String id = object.getString("id").toLowerCase(Locale.ROOT);
+        String name = sanitizeName(object.getString("name"));
+        String mime = object.getString("mime").trim();
+        String digest = object.getString("sha256").toLowerCase(Locale.ROOT);
+        int size = object.getInt("size");
+        if (!SAFE_ID.matcher(id).matches() || !SAFE_MIME.matcher(mime).matches()
+                || !SHA256_HEX.matcher(digest).matches() || size <= 0 || size > MAX_FILE_BYTES) {
+            throw new IllegalArgumentException("Invalid save metadata");
+        }
+        pendingSave = new PendingSave(id, name, mime, size, digest);
+    }
+
+    private void appendSaveChunk(JSONObject object) throws JSONException {
+        PendingSave save = pendingSave;
+        if (save == null || !save.id.equals(object.getString("id").toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("No matching save");
+        }
+        int index = object.getInt("index");
+        if (index != save.nextIndex) throw new IllegalArgumentException("Out-of-order save chunk");
+        String encoded = object.getString("base64");
+        if (encoded.length() > 300_000) throw new IllegalArgumentException("Chunk too large");
+        byte[] decoded = Base64.decode(encoded, Base64.NO_WRAP);
+        if (decoded.length <= 0 || decoded.length > MAX_CHUNK_BYTES
+                || save.offset + decoded.length > save.expectedSize) {
+            Arrays.fill(decoded, (byte) 0);
+            throw new IllegalArgumentException("Invalid save chunk");
+        }
+        System.arraycopy(decoded, 0, save.buffer, save.offset, decoded.length);
+        save.offset += decoded.length;
+        Arrays.fill(decoded, (byte) 0);
+        save.nextIndex++;
+    }
+
+    private void finishSave(JSONObject object) throws JSONException {
+        PendingSave save = pendingSave;
+        pendingSave = null;
+        if (save == null || !save.id.equals(object.getString("id").toLowerCase(Locale.ROOT))
+                || save.offset != save.expectedSize) {
+            if (save != null) save.clear();
+            throw new IllegalArgumentException("Incomplete save");
+        }
+        byte[] bytes = save.takeBytes();
+        if (!constantTimeHexEquals(sha256(bytes), save.expectedDigest)) {
+            Arrays.fill(bytes, (byte) 0);
+            throw new IllegalArgumentException("Native SHA-256 verification failed");
+        }
+        readySave = new ReadySave(save.name, save.mime, bytes);
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType(save.mime)
+                .putExtra(Intent.EXTRA_TITLE, save.name)
+                .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        createDocumentLauncher.launch(intent);
+    }
+
+    private void rejectPendingSave(String message) {
+        if (pendingSave != null) pendingSave.clear();
+        pendingSave = null;
+        postSaveStatus(false, message);
+    }
+
+    private void postSaveStatus(boolean ok, String message) {
+        if (webView == null) return;
+        String script = "window.dispatchEvent(new CustomEvent('decimen-save-status',{detail:{ok:"
+                + ok + ",message:" + JSONObject.quote(message) + "}}));";
+        webView.post(() -> webView.evaluateJavascript(script, null));
+    }
+
+    private void applySystemInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(webView, (view, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars()
+                    | WindowInsetsCompat.Type.displayCutout());
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            return insets;
+        });
+    }
+
+    private void configureBackNavigation() {
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (webView.canGoBack()) webView.goBack();
+                else finish();
+            }
