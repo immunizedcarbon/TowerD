@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - decimen-apk-build
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
