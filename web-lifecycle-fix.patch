@@ -1,15 +1,14 @@
 diff --git a/main.ts b/main.ts
 new file mode 100644
-index 0000000..fdec25e
+index 0000000..62fc3b0
 --- /dev/null
 +++ b/main.ts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,130 @@
 +import QRCode from "qrcode";
 +import wasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
 +import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 +import { LTDecoder, LTEncoder } from "./shared/fountain";
 +import {
-+  HEADER_LEN,
 +  MAX_ENVELOPE_BYTES,
 +  buildEnvelope,
 +  digestEqual,
@@ -20,7 +19,7 @@ index 0000000..fdec25e
 +  type FrameHeader,
 +} from "./shared/protocol";
 +
-+prepareZXingModule({ overrides: { locateFile: (path, prefix) => (path.endsWith(".wasm") ? wasmUrl : prefix + path) } });
++prepareZXingModule({ overrides: { locateFile: (path: string, prefix: string) => (path.endsWith(".wasm") ? wasmUrl : prefix + path) } });
 +
 +const status = document.getElementById("selftest-status")!;
 +const details = document.getElementById("selftest-details")!;
