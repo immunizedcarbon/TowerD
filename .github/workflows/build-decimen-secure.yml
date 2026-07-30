@@ -66,6 +66,7 @@ jobs:
           cd source
           npm ci
           npm audit --audit-level=high
+          sed -i 's#"../source/#"../../source/#g' ../payload/tests/core-test.ts
           node ../payload/tests/core-test.ts
           npm run build
           npm audit --json > ../npm-audit-hardened.json
