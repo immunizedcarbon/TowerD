@@ -1,0 +1,113 @@
+name: Final verified Decimen APK
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: final-verified-decimen-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Audited signed APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+      - uses: android-actions/setup-android@v3
+      - name: Install compile SDK
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" platform-tools "platforms;android-36" "build-tools;36.0.0"
+      - name: Audit and build
+        shell: bash
+        run: bash ci/build-final.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decimen-final-verified
+          path: final-artifact
+          if-no-files-found: error
+          retention-days: 7
+
+  device:
+    name: ${{ matrix.label }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Pixel 9a · Android 16
+            profile: pixel9a
+            api: '36'
+            image: google_apis
+            width: '1080'
+            height: '2424'
+            density: '422'
+            ram: '4096'
+            rotation: '0'
+          - label: Pixel 8a · Android 16
+            profile: pixel8a
+            api: '36'
+            image: google_apis
+            width: '1080'
+            height: '2400'
+            density: '430'
+            ram: '4096'
+            rotation: '0'
+          - label: Galaxy Tab S5e LTE · LineageOS 22.2 / Android 15
+            profile: tabs5e
+            api: '35'
+            image: default
+            width: '1600'
+            height: '2560'
+            density: '288'
+            ram: '3072'
+            rotation: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: decimen-final-verified
+          path: final-artifact
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Run exact device profile
+        shell: bash
+        env:
+          PROFILE: ${{ matrix.profile }}
+          API: ${{ matrix.api }}
+          IMAGE: ${{ matrix.image }}
+          WIDTH: ${{ matrix.width }}
+          HEIGHT: ${{ matrix.height }}
+          DENSITY: ${{ matrix.density }}
+          RAM: ${{ matrix.ram }}
+          ROTATION: ${{ matrix.rotation }}
+        run: bash ci/test-device.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exact-device-${{ matrix.profile }}
+          path: evidence-${{ matrix.profile }}
+          if-no-files-found: warn
+          retention-days: 7
