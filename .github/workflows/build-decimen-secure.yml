@@ -67,7 +67,8 @@ jobs:
           npm ci
           npm audit --audit-level=high
           sed -i 's#"../source/#"../../source/#g' ../payload/tests/core-test.ts
-          node ../payload/tests/core-test.ts
+          npx esbuild ../payload/tests/core-test.ts --bundle --platform=node --format=esm --outfile=../core-test.mjs
+          node ../core-test.mjs
           npm run build
           npm audit --json > ../npm-audit-hardened.json
 
