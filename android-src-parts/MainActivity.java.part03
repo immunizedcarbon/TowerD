@@ -1,0 +1,133 @@
+            if (request.isForMainFrame()) {
+                Toast.makeText(MainActivity.this, "Externe Navigation wurde blockiert.", Toast.LENGTH_SHORT).show();
+                return true;
+            }
+            return !isAppAsset(request.getUrl());
+        }
+
+        @Override
+        public void onReceivedSslError(WebView view, SslErrorHandler handler, android.net.http.SslError error) {
+            handler.cancel();
+        }
+
+        @Override
+        public void onSafeBrowsingHit(WebView view, WebResourceRequest request, int threatType,
+                                      SafeBrowsingResponse callback) {
+            callback.backToSafety(true);
+        }
+
+        @Override
+        public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+            Log.e(TAG, "WebView renderer exited; crash=" + detail.didCrash());
+            if (!rendererRecoveryAttempted) {
+                rendererRecoveryAttempted = true;
+                recreate();
+            } else {
+                finish();
+            }
+            return true;
+        }
+    }
+
+    private final class LockedWebChromeClient extends WebChromeClient {
+        @Override
+        public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+            int priority = consoleMessage.messageLevel() == ConsoleMessage.MessageLevel.ERROR
+                    ? Log.ERROR : Log.DEBUG;
+            Log.println(priority, TAG + "Web", consoleMessage.sourceId() + ":"
+                    + consoleMessage.lineNumber() + " " + consoleMessage.message());
+            return true;
+        }
+
+        @Override
+        public void onPermissionRequest(PermissionRequest request) {
+            runOnUiThread(() -> {
+                if (!isReceivePage() || !isTrustedOrigin(request.getOrigin())
+                        || !requestsVideoOnly(request.getResources())) {
+                    request.deny();
+                    return;
+                }
+                if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA)
+                        == PackageManager.PERMISSION_GRANTED) {
+                    request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                    return;
+                }
+                if (pendingCameraRequest != null) pendingCameraRequest.deny();
+                pendingCameraRequest = request;
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA);
+            });
+        }
+
+        @Override
+        public void onPermissionRequestCanceled(PermissionRequest request) {
+            if (pendingCameraRequest == request) pendingCameraRequest = null;
+        }
+
+        @Override
+        public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> filePathCallback,
+                                         FileChooserParams fileChooserParams) {
+            if (!isSendPage()) {
+                filePathCallback.onReceiveValue(null);
+                return true;
+            }
+            if (fileChooserCallback != null) fileChooserCallback.onReceiveValue(null);
+            fileChooserCallback = filePathCallback;
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                    .addCategory(Intent.CATEGORY_OPENABLE)
+                    .setType("*/*")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            openDocumentLauncher.launch(intent);
+            return true;
+        }
+    }
+
+    private static final class PendingSave {
+        final String id;
+        final String name;
+        final String mime;
+        final int expectedSize;
+        final String expectedDigest;
+        byte[] buffer;
+        int offset;
+        int nextIndex;
+
+        PendingSave(String id, String name, String mime, int expectedSize, String expectedDigest) {
+            this.id = id;
+            this.name = name;
+            this.mime = mime;
+            this.expectedSize = expectedSize;
+            this.expectedDigest = expectedDigest;
+            this.buffer = new byte[expectedSize];
+        }
+
+        byte[] takeBytes() {
+            byte[] owned = buffer;
+            buffer = new byte[0];
+            offset = 0;
+            return owned;
+        }
+
+        void clear() {
+            Arrays.fill(buffer, (byte) 0);
+            buffer = new byte[0];
+            offset = 0;
+        }
+    }
+
+    private static final class ReadySave {
+        final String name;
+        final String mime;
+        final byte[] bytes;
+
+        ReadySave(String name, String mime, byte[] bytes) {
+            this.name = name;
+            this.mime = mime;
+            this.bytes = bytes;
+        }
+
+        void clear() {
+            Arrays.fill(bytes, (byte) 0);
+        }
+    }
+}
