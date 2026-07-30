@@ -92,7 +92,7 @@ public final class DeviceCompatibilityTest {
                             + "cls:document.getElementById('specs')?.className||''})",
                     value -> value.contains("\\\"canvas\\\":") && value.contains("status ok")
                             && !value.contains("Fehler"), 90_000);
-            int canvasWidth = Integer.parseInt(sender.replaceAll(".*\\\\\\\"canvas\\\\\\\":([0-9]+).*", "$1"));
+            int canvasWidth = Integer.parseInt(sender.replaceAll(".*canvas[^0-9]*([0-9]+).*", "$1"));
             assertTrue("Sender must render a substantial QR code: " + sender, canvasWidth > 100);
 
             load(scenario, ROOT + "receive/index.html");
