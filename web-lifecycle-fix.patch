@@ -135,27 +135,27 @@ index 0000000..fdec25e
 +
 +runButton.addEventListener("click", () => void runSelfTest());
 +void runSelfTest();
-+--- a/send/main.ts
-++++ b/send/main.ts
-+@@ -273,9 +273,19 @@
-+ });
-+ restartBtn.addEventListener("click", () => void startStream());
-+ window.addEventListener("resize", () => void startStream());
-+-window.addEventListener("decimen-native-pause", () => { paused = true; toggleBtn.textContent = "Fortsetzen"; });
-++window.addEventListener("decimen-native-pause", () => {
-++  paused = true;
-++  toggleBtn.textContent = "Fortsetzen";
-++  void wakeLock?.release().catch(() => undefined);
-++  wakeLock = null;
-++});
-+ document.addEventListener("visibilitychange", () => {
-+-  if (!document.hidden && !paused) void acquireWakeLock();
-++  if (document.hidden) {
-++    void wakeLock?.release().catch(() => undefined);
-++    wakeLock = null;
-++  } else if (!paused) {
-++    void acquireWakeLock();
-++  }
-+ });
-+ 
-+ void startStream();
+--- a/send/main.ts
++++ b/send/main.ts
+@@ -273,9 +273,19 @@
+ });
+ restartBtn.addEventListener("click", () => void startStream());
+ window.addEventListener("resize", () => void startStream());
+-window.addEventListener("decimen-native-pause", () => { paused = true; toggleBtn.textContent = "Fortsetzen"; });
++window.addEventListener("decimen-native-pause", () => {
++  paused = true;
++  toggleBtn.textContent = "Fortsetzen";
++  void wakeLock?.release().catch(() => undefined);
++  wakeLock = null;
++});
+ document.addEventListener("visibilitychange", () => {
+-  if (!document.hidden && !paused) void acquireWakeLock();
++  if (document.hidden) {
++    void wakeLock?.release().catch(() => undefined);
++    wakeLock = null;
++  } else if (!paused) {
++    void acquireWakeLock();
++  }
+ });
+ 
+ void startStream();
