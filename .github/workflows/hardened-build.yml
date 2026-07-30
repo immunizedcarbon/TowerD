@@ -1,0 +1,380 @@
+name: Hardened Decimen APK
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hardened-decimen-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '17'
+  GRADLE_VERSION: '9.5.0'
+  ANDROID_PLATFORM: '36'
+  ANDROID_BUILD_TOOLS: '36.0.0'
+
+jobs:
+  build-audit:
+    name: Build, audit and sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out build workspace
+        uses: actions/checkout@v4
+
+      - name: Reconstruct reviewed source at pinned upstream commit
+        run: |
+          mkdir project
+          git clone --filter=blob:none https://github.com/bashalarmistalt/decimen-optical-transfer.git project/web
+          git -C project/web checkout 13e86c26a187882637015b9267bb0361d67f1033
+          base64 --decode web-hardening.patch.gz.b64 | gzip --decompress > "$RUNNER_TEMP/web-hardening.patch"
+          git -C project/web apply --check "$RUNNER_TEMP/web-hardening.patch"
+          git -C project/web apply "$RUNNER_TEMP/web-hardening.patch"
+          base64 --decode android-project.tar.gz.b64 | tar -xzf - -C project
+          test -f project/web/package-lock.json
+          test -f project/android/app/src/main/AndroidManifest.xml
+          test -f project/VERIFICATION.md
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: project/web/package-lock.json
+
+      - name: Type-check, audit and build web application
+        working-directory: project/web
+        run: |
+          npm ci --ignore-scripts
+          npm run check
+          npm run build
+          npm audit --json > ../npm-audit.json || AUDIT_CODE=$?
+          node - <<'NODE'
+          const report = require('../npm-audit.json');
+          const v = report.metadata?.vulnerabilities ?? {};
+          const bad = (v.low || 0) + (v.moderate || 0) + (v.high || 0) + (v.critical || 0);
+          if (bad !== 0) {
+            console.error('npm audit reported vulnerabilities:', v);
+            process.exit(1);
+          }
+          console.log('npm audit:', v);
+          NODE
+
+      - name: Static security scan
+        run: |
+          pipx run semgrep scan \
+            --config p/default \
+            --json \
+            --exclude 'project/web/node_modules' \
+            --exclude 'project/web/dist' \
+            project/web project/android/app/src > project/semgrep.json
+
+      - name: Package web assets into Android app
+        run: |
+          rm -rf project/android/app/src/main/assets/www
+          mkdir -p project/android/app/src/main/assets/www
+          cp -a project/web/dist/. project/android/app/src/main/assets/www/
+          test -f project/android/app/src/main/assets/www/index.html
+          test -f project/android/app/src/main/assets/www/send/index.html
+          test -f project/android/app/src/main/assets/www/receive/index.html
+          find project/android/app/src/main/assets/www -type f -print | sort
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-read-only: false
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}"
+
+      - name: Generate isolated release signing key
+        shell: bash
+        run: |
+          PASSWORD=$(openssl rand -hex 24)
+          echo "::add-mask::$PASSWORD"
+          KEYSTORE="$RUNNER_TEMP/decimen-release.jks"
+          keytool -genkeypair -v \
+            -keystore "$KEYSTORE" \
+            -storepass "$PASSWORD" \
+            -keypass "$PASSWORD" \
+            -alias decimen \
+            -keyalg RSA \
+            -keysize 3072 \
+            -sigalg SHA256withRSA \
+            -validity 10000 \
+            -dname "CN=Decimen Local Release, OU=Reproducible Build, O=Open Source, C=DE"
+          {
+            echo "DECIMEN_KEYSTORE=$KEYSTORE"
+            echo "DECIMEN_STORE_PASSWORD=$PASSWORD"
+            echo "DECIMEN_KEY_ALIAS=decimen"
+            echo "DECIMEN_KEY_PASSWORD=$PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Lint, test-compile and build APKs
+        working-directory: project/android
+        run: |
+          gradle --no-daemon --stacktrace \
+            :app:lintRelease \
+            :app:assembleDebug \
+            :app:assembleDebugAndroidTest \
+            :app:assembleRelease
+
+      - name: Verify release APK and security properties
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=project/android/app/build/outputs/apk/release/app-release.apk
+          DEBUG_APK=project/android/app/build/outputs/apk/debug/app-debug.apk
+          TEST_APK=project/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          test -s "$APK"
+          test -s "$DEBUG_APK"
+          test -s "$TEST_APK"
+
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK" | tee project/apksigner-report.txt
+          apkanalyzer apk summary "$APK" | tee project/apk-summary.txt
+          apkanalyzer manifest permissions "$APK" | tee project/manifest-permissions.txt
+          apkanalyzer manifest debuggable "$APK" | tee project/manifest-debuggable.txt
+          apkanalyzer manifest min-sdk "$APK" | tee project/manifest-min-sdk.txt
+          apkanalyzer manifest target-sdk "$APK" | tee project/manifest-target-sdk.txt
+
+          ! grep -q 'android.permission.INTERNET' project/manifest-permissions.txt
+          grep -q 'android.permission.CAMERA' project/manifest-permissions.txt
+          grep -qx 'false' project/manifest-debuggable.txt
+          grep -qx '35' project/manifest-min-sdk.txt
+          grep -qx '36' project/manifest-target-sdk.txt
+          if unzip -Z1 "$APK" | grep -q '^lib/'; then
+            echo 'Unexpected native library found; architecture-independent APK required.' >&2
+            exit 1
+          fi
+          unzip -Z1 "$APK" | grep -q 'assets/www/index.html'
+          unzip -Z1 "$APK" | grep -q 'assets/www/send/index.html'
+          unzip -Z1 "$APK" | grep -q 'assets/www/receive/index.html'
+          unzip -Z1 "$APK" | grep -q 'zxing_reader.*\.wasm'
+
+      - name: Collect build artifacts and report
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/reports
+          cp project/android/app/build/outputs/apk/release/app-release.apk \
+            artifact/Decimen-Optical-Transfer-0.2.0-hardened.apk
+          cp project/android/app/build/outputs/apk/debug/app-debug.apk artifact/app-debug.apk
+          cp project/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
+            artifact/app-debug-androidTest.apk
+          cp project/npm-audit.json project/semgrep.json project/apksigner-report.txt \
+            project/apk-summary.txt project/manifest-permissions.txt project/manifest-debuggable.txt \
+            project/manifest-min-sdk.txt project/manifest-target-sdk.txt artifact/reports/
+          cp -a project/android/app/build/reports/lint-results-release.html artifact/reports/ || true
+          cp -a project/android/app/build/reports/lint-results-release.xml artifact/reports/ || true
+          cp project/VERIFICATION.md artifact/
+          (
+            cd artifact
+            sha256sum Decimen-Optical-Transfer-0.2.0-hardened.apk > SHA256SUMS.txt
+          )
+          cat artifact/SHA256SUMS.txt
+
+      - name: Upload signed build
+        uses: actions/upload-artifact@v4
+        with:
+          name: decimen-hardened-build
+          path: artifact
+          if-no-files-found: error
+          retention-days: 7
+
+  device-test:
+    name: ${{ matrix.label }} compatibility
+    needs: build-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Pixel 9a / Android 16
+            profile: pixel9a
+            api: '36'
+            image: google_apis
+            width: '1080'
+            height: '2424'
+            density: '422'
+            ram: '8192'
+            rotation: '0'
+          - label: Pixel 8a / Android 16
+            profile: pixel8a
+            api: '36'
+            image: google_apis
+            width: '1080'
+            height: '2400'
+            density: '430'
+            ram: '8192'
+            rotation: '0'
+          - label: Galaxy Tab S5e LTE / LineageOS 22.2 equivalent
+            profile: tabs5e
+            api: '35'
+            image: default
+            width: '1600'
+            height: '2560'
+            density: '288'
+            ram: '4096'
+            rotation: '1'
+
+    steps:
+      - name: Download signed build
+        uses: actions/download-artifact@v4
+        with:
+          name: decimen-hardened-build
+          path: artifact
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install emulator image
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "emulator" \
+            "system-images;android-${{ matrix.api }};${{ matrix.image }};x86_64"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          sudo chmod 666 /dev/kvm || true
+
+      - name: Create and boot target-shaped emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="system-images;android-${{ matrix.api }};${{ matrix.image }};x86_64"
+          echo no | avdmanager create avd --force --name decimen-test --package "$IMAGE" --device pixel_8
+          CONFIG="$HOME/.android/avd/decimen-test.avd/config.ini"
+          {
+            echo 'hw.cpu.ncore=4'
+            echo 'hw.keyboard=yes'
+            echo 'hw.gpu.enabled=yes'
+            echo 'hw.gpu.mode=swiftshader_indirect'
+            echo 'hw.camera.back=virtualscene'
+            echo 'hw.camera.front=none'
+            echo 'disk.dataPartition.size=8G'
+            echo 'skin.dynamic=yes'
+            echo 'showDeviceFrame=no'
+            echo 'hw.ramSize=${{ matrix.ram }}'
+          } >> "$CONFIG"
+
+          nohup emulator @decimen-test \
+            -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
+            -gpu swiftshader_indirect -camera-back virtualscene -camera-front none \
+            -memory ${{ matrix.ram }} -cores 4 -no-metrics \
+            > emulator.log 2>&1 &
+          echo $! > emulator.pid
+          adb wait-for-device
+          for attempt in $(seq 1 240); do
+            if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+              break
+            fi
+            if [ "$attempt" = 240 ]; then
+              cat emulator.log
+              exit 1
+            fi
+            sleep 2
+          done
+          adb shell input keyevent 82 || true
+          adb shell wm size '${{ matrix.width }}x${{ matrix.height }}'
+          adb shell wm density '${{ matrix.density }}'
+          adb shell settings put system accelerometer_rotation 0
+          adb shell settings put system user_rotation '${{ matrix.rotation }}'
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell settings put secure show_ime_with_hard_keyboard 0 || true
+          adb shell settings put global stay_on_while_plugged_in 3
+          adb shell getprop | tee device-properties.txt
+          adb shell wm size
+          adb shell wm density
+
+      - name: Run instrumented compatibility and security tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb logcat -c
+          adb install -r -t artifact/app-debug.apk
+          adb install -r -t artifact/app-debug-androidTest.apk
+          adb shell pm grant dev.decimen.optical.debug android.permission.CAMERA
+          timeout 420 adb shell am instrument -w -r \
+            -e class dev.decimen.optical.DeviceCompatibilityTest \
+            -e profile '${{ matrix.profile }}' \
+            -e expected_sdk '${{ matrix.api }}' \
+            -e expected_width '${{ matrix.width }}' \
+            -e expected_height '${{ matrix.height }}' \
+            dev.decimen.optical.debug.test/androidx.test.runner.AndroidJUnitRunner \
+            | tee instrumentation.txt
+          grep -q 'OK (1 test)' instrumentation.txt
+
+      - name: Install and smoke-test signed release
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb shell am force-stop dev.decimen.optical.debug || true
+          adb uninstall dev.decimen.optical.debug.test || true
+          adb uninstall dev.decimen.optical.debug || true
+          adb install artifact/Decimen-Optical-Transfer-0.2.0-hardened.apk
+          adb shell am start -W -n dev.decimen.optical/.MainActivity | tee release-launch.txt
+          sleep 20
+          test -n "$(adb shell pidof dev.decimen.optical | tr -d '\r')"
+          adb shell dumpsys package dev.decimen.optical | grep -q 'android.permission.CAMERA'
+          if adb shell dumpsys package dev.decimen.optical | grep -q 'android.permission.INTERNET'; then
+            echo 'Release unexpectedly requests INTERNET.' >&2
+            exit 1
+          fi
+          adb exec-out screencap -p > release-${{ matrix.profile }}.png
+
+      - name: Collect device evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p evidence
+          adb logcat -d -v threadtime > evidence/logcat.txt || true
+          adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
+          adb pull /sdcard/window.xml evidence/window.xml || true
+          adb pull /sdcard/Android/data/dev.decimen.optical.debug/files evidence/debug-files || true
+          cp instrumentation.txt release-launch.txt release-${{ matrix.profile }}.png \
+            device-properties.txt emulator.log evidence/ 2>/dev/null || true
+          if grep -E 'FATAL EXCEPTION.*dev\.decimen|Process: dev\.decimen.*FATAL' evidence/logcat.txt; then
+            echo 'Fatal application exception detected.' >&2
+            exit 1
+          fi
+
+      - name: Upload device evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-${{ matrix.profile }}-evidence
+          path: evidence
+          if-no-files-found: warn
+          retention-days: 7
