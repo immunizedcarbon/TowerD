@@ -1,0 +1,62 @@
+    private static void grantCameraPermission(String packageName) throws IOException {
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        device.executeShellCommand("pm grant " + packageName + " android.permission.CAMERA");
+    }
+
+    private static void load(ActivityScenario<MainActivity> scenario, String url) throws Exception {
+        scenario.onActivity(activity -> activity.getWebViewForTests().loadUrl(url));
+        waitForJs(scenario, "document.readyState", value -> value.contains("complete"), 30_000);
+    }
+
+    private static String waitForJs(ActivityScenario<MainActivity> scenario,
+                                    String expression,
+                                    Predicate<String> predicate,
+                                    long timeoutMs) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        String last = "";
+        while (System.nanoTime() < deadline) {
+            last = eval(scenario, expression);
+            if (predicate.test(last)) return last;
+            Thread.sleep(250);
+        }
+        throw new AssertionError("Timed out waiting for JS expression: " + expression + " last=" + last);
+    }
+
+    private static String eval(ActivityScenario<MainActivity> scenario, String expression) throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> result = new AtomicReference<>("null");
+        scenario.onActivity(activity -> activity.getWebViewForTests().evaluateJavascript(
+                "(() => { try { return (" + expression + "); } catch (e) { return 'JS_ERROR:' + e; } })()",
+                value -> {
+                    result.set(value == null ? "null" : value);
+                    latch.countDown();
+                }));
+        if (!latch.await(10, TimeUnit.SECONDS)) throw new AssertionError("evaluateJavascript timed out");
+        return result.get();
+    }
+
+    private static void captureEvidence(Context context, UiDevice device, String profile) {
+        File directory = context.getExternalFilesDir(null);
+        if (directory != null) {
+            device.takeScreenshot(new File(directory, "decimen-" + profile + ".png"), 1.0f, 90);
+        }
+    }
+
+    private static void logRuntimeEvidence(Context context, UiDevice device, String profile,
+                                           int expectedWidth, int expectedHeight) throws Exception {
+        ActivityManager manager = context.getSystemService(ActivityManager.class);
+        ActivityManager.MemoryInfo memory = new ActivityManager.MemoryInfo();
+        manager.getMemoryInfo(memory);
+        String report = String.format(Locale.ROOT,
+                "profile=%s\nsdk=%d\nrelease=%s\nmodel=%s\nabi=%s\ndisplay=%dx%d\nexpected=%dx%d\nram_bytes=%d\nwebview=%s\n",
+                profile, Build.VERSION.SDK_INT, Build.VERSION.RELEASE, Build.MODEL,
+                String.join(",", Build.SUPPORTED_ABIS), device.getDisplayWidth(), device.getDisplayHeight(),
+                expectedWidth, expectedHeight, memory.totalMem,
+                String.valueOf(WebView.getCurrentWebViewPackage()));
+        File directory = context.getExternalFilesDir(null);
+        if (directory != null) {
+            java.nio.file.Files.writeString(new File(directory, "runtime-" + profile + ".txt").toPath(),
+                    report, StandardCharsets.UTF_8);
+        }
+    }
+}
