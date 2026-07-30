@@ -1,0 +1,43 @@
+name: Decimen verified build orchestrator
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Start final build
+        run: |
+          gh workflow run decimen-final-build.yml --repo "$GITHUB_REPOSITORY" --ref main
+          sleep 8
+          for attempt in $(seq 1 12); do
+            RUN_ID="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow decimen-final-build.yml --branch main --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            if [ -n "$RUN_ID" ]; then break; fi
+            sleep 5
+          done
+          test -n "${RUN_ID:-}"
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+      - name: Wait for final build
+        run: gh run watch "$RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status --interval 10
+      - name: Download verified build
+        run: |
+          mkdir -p verified
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name decimen-secure-verified --dir verified
+          test -f verified/out/decimen-optical-transfer-0.2.0-secure.apk
+          test -f verified/out/VERIFICATION.txt
+      - name: Upload verified build
+        uses: actions/upload-artifact@v4
+        with:
+          name: decimen-secure-verified-final
+          path: verified/
+          if-no-files-found: error
+          retention-days: 7
