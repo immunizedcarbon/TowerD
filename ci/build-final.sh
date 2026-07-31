@@ -22,7 +22,29 @@ mkdir -p "$WORK/android/app/src/main/java/dev/decimen/optical"
 mkdir -p "$WORK/android/app/src/androidTest/java/dev/decimen/optical"
 cat "$ROOT"/android-src-parts/MainActivity.java.part* > "$WORK/android/app/src/main/java/dev/decimen/optical/MainActivity.java"
 cat "$ROOT"/android-src-parts/DeviceCompatibilityTest.java.part* > "$WORK/android/app/src/androidTest/java/dev/decimen/optical/DeviceCompatibilityTest.java"
-echo '0cb55a214feec2c2c064b8b27e0f8e99ac2e3f452d2656972d7a4da513ca0352  '"$WORK/android/app/src/main/java/dev/decimen/optical/MainActivity.java" | sha256sum -c -
+MAIN_ACTIVITY="$WORK/android/app/src/main/java/dev/decimen/optical/MainActivity.java"
+echo '0cb55a214feec2c2c064b8b27e0f8e99ac2e3f452d2656972d7a4da513ca0352  '"$MAIN_ACTIVITY" | sha256sum -c -
+python3 - "$MAIN_ACTIVITY" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding='utf-8')
+if text.count('BuildConfig.DEBUG') != 2:
+    raise SystemExit('Unexpected BuildConfig.DEBUG occurrence count')
+text = text.replace('BuildConfig.DEBUG', 'isDebuggable()')
+needle = '    private String resolveDeviceModel() {\n'
+helper = (
+    '    private boolean isDebuggable() {\n'
+    '        return (getApplicationInfo().flags\n'
+    '                & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;\n'
+    '    }\n\n'
+)
+if text.count(needle) != 1:
+    raise SystemExit('resolveDeviceModel insertion point missing')
+path.write_text(text.replace(needle, helper + needle), encoding='utf-8')
+PY
+! grep -q 'BuildConfig.DEBUG' "$MAIN_ACTIVITY"
+grep -q 'ApplicationInfo.FLAG_DEBUGGABLE' "$MAIN_ACTIVITY"
 cp "$ROOT/VERIFICATION.md" "$WORK/VERIFICATION.md"
 
 pushd "$WORK/web"
@@ -45,9 +67,16 @@ pipx run semgrep scan --config p/default --json \
 python3 - "$WORK/semgrep.json" <<'PY'
 import json, sys
 report = json.load(open(sys.argv[1], encoding='utf-8'))
-print('Semgrep findings:', len(report.get('results', [])))
-print('Semgrep errors:', len(report.get('errors', [])))
-if report.get('errors'):
+results = report.get('results', [])
+errors = report.get('errors', [])
+print('Semgrep findings:', len(results))
+print('Semgrep errors:', len(errors))
+for finding in results:
+    extra = finding.get('extra', {})
+    start = finding.get('start', {})
+    print('SEMGREP_FINDING', finding.get('check_id'), finding.get('path'),
+          start.get('line'), extra.get('severity'), extra.get('message'))
+if results or errors:
     raise SystemExit(1)
 PY
 
