@@ -19,8 +19,6 @@ SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 AVDMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
 IMAGE_ID="system-images;android-${API};${IMAGE};x86_64"
 
-# sdkmanager closes stdin when all licences are accepted. With pipefail, the
-# corresponding SIGPIPE from `yes` is expected and must not fail the job.
 yes | "$SDKMANAGER" --licenses >/dev/null || true
 "$SDKMANAGER" "platform-tools" "emulator" "$IMAGE_ID"
 sudo chmod 666 /dev/kvm || true
@@ -96,7 +94,7 @@ adb pull /sdcard/Android/data/dev.decimen.optical.debug/files "$EVIDENCE/debug-f
 
 adb uninstall dev.decimen.optical.debug.test || true
 adb uninstall dev.decimen.optical.debug || true
-adb install "$ARTIFACT/Decimen-Optical-Transfer-0.2.0-hardened.apk"
+adb install "$ARTIFACT/Decimen-Optical-Transfer-0.3.0-hardened.apk"
 adb shell am start -W -n dev.decimen.optical/.MainActivity | tee "$EVIDENCE/release-launch.txt"
 sleep 15
 test -n "$(adb shell pidof dev.decimen.optical | tr -d '\r')"
