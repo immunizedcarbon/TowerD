@@ -19,7 +19,7 @@
         android:theme="@style/Theme.Decimen"
         android:usesCleartextTraffic="false">
 
-        <!-- nosemgrep: java.android.security.exported_activity.exported_activity -- Android requires the MAIN/LAUNCHER activity to be exported; release-only behavior is guarded by FLAG_DEBUGGABLE. -->
+        <!-- nosemgrep: java.android.security.exported_activity.exported_activity ; Android requires the MAIN/LAUNCHER activity to be exported, and release-only behavior is guarded by FLAG_DEBUGGABLE. -->
         <activity
             android:name=".MainActivity"
             android:configChanges="keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
