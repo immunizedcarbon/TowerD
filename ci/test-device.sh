@@ -24,7 +24,10 @@ AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
 AVD_DIR="$AVD_HOME/$AVD_NAME.avd"
 
 yes | "$SDKMANAGER" --licenses >/dev/null || true
-"$SDKMANAGER" --channel=3 "platform-tools" "emulator" "$IMAGE_ID"
+timeout 1800 "$SDKMANAGER" --channel=3 \
+  "platform-tools" \
+  "emulator" \
+  "$IMAGE_ID" | tee "$EVIDENCE/sdk-install.txt"
 sudo chmod 666 /dev/kvm || true
 
 # Width, height, density, memory and rotation are set explicitly below. Avoid a
@@ -35,7 +38,7 @@ printf 'no\n' | "$AVDMANAGER" create avd \
   --force \
   --name "$AVD_NAME" \
   --package "$IMAGE_ID" \
-  --path "$AVD_DIR"
+  --path "$AVD_DIR" | tee "$EVIDENCE/avd-create.txt"
 for attempt in $(seq 1 30); do
   if [ -f "$AVD_DIR/config.ini" ]; then
     break
@@ -63,9 +66,17 @@ EOF
 
 export ANDROID_AVD_HOME="$AVD_HOME"
 export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
-nohup emulator "@$AVD_NAME" -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
-  -gpu swiftshader_indirect -camera-back virtualscene -camera-front none \
-  -memory "$RAM" -cores 4 -no-metrics > "$EVIDENCE/emulator.log" 2>&1 &
+nohup emulator "@$AVD_NAME" \
+  -no-window \
+  -no-audio \
+  -no-boot-anim \
+  -no-snapshot \
+  -no-snapshot-save \
+  -wipe-data \
+  -gpu swiftshader_indirect \
+  -memory "$RAM" \
+  -cores 4 \
+  -no-metrics > "$EVIDENCE/emulator.log" 2>&1 &
 EMULATOR_PID=$!
 cleanup() {
   adb emu kill >/dev/null 2>&1 || true
@@ -73,17 +84,45 @@ cleanup() {
 }
 trap cleanup EXIT
 
-adb wait-for-device
-for attempt in $(seq 1 240); do
-  if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; then
-    break
-  fi
-  if [ "$attempt" = 240 ]; then
-    cat "$EVIDENCE/emulator.log"
+DEVICE_READY=0
+for attempt in $(seq 1 180); do
+  if ! kill -0 "$EMULATOR_PID" >/dev/null 2>&1; then
+    echo 'Emulator process exited before ADB became available' >&2
+    cat "$EVIDENCE/emulator.log" >&2 || true
     exit 1
+  fi
+  if [ "$(adb get-state 2>/dev/null || true)" = device ]; then
+    DEVICE_READY=1
+    break
   fi
   sleep 2
 done
+if [ "$DEVICE_READY" != 1 ]; then
+  echo 'Emulator did not become visible to ADB within six minutes' >&2
+  adb devices -l >&2 || true
+  cat "$EVIDENCE/emulator.log" >&2 || true
+  exit 1
+fi
+
+BOOT_READY=0
+for attempt in $(seq 1 180); do
+  if ! kill -0 "$EMULATOR_PID" >/dev/null 2>&1; then
+    echo 'Emulator process exited before Android completed booting' >&2
+    cat "$EVIDENCE/emulator.log" >&2 || true
+    exit 1
+  fi
+  if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; then
+    BOOT_READY=1
+    break
+  fi
+  sleep 2
+done
+if [ "$BOOT_READY" != 1 ]; then
+  echo 'Android did not complete booting within six minutes' >&2
+  adb shell getprop >&2 || true
+  cat "$EVIDENCE/emulator.log" >&2 || true
+  exit 1
+fi
 
 adb shell input keyevent 82 || true
 adb shell wm size "${WIDTH}x${HEIGHT}"
