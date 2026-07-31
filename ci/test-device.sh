@@ -64,8 +64,21 @@ showDeviceFrame=no
 hw.ramSize=$RAM
 EOF
 
+cat > "$AVD_HOME/$AVD_NAME.ini" <<EOF
+avd.ini.encoding=UTF-8
+path=$AVD_DIR
+target=android-$API
+EOF
+
 export ANDROID_AVD_HOME="$AVD_HOME"
 export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
+if ! emulator -list-avds | grep -qx "$AVD_NAME"; then
+  echo "Emulator did not register AVD $AVD_NAME" >&2
+  cat "$AVD_HOME/$AVD_NAME.ini" >&2 || true
+  find "$AVD_HOME" -maxdepth 2 -type f -print >&2 || true
+  exit 1
+fi
+
 nohup emulator "@$AVD_NAME" \
   -no-window \
   -no-audio \
