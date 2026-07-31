@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/ci/optical-build.sh"
-mkdir -p "$ROOT/final-artifact"
+LOG="$RUNNER_TEMP/optical-transfer-build.log"
 python3 - "$SCRIPT" <<'PY'
 from pathlib import Path
 import sys
@@ -14,10 +14,11 @@ if text.count(needle) == 1:
 path.write_text(text, encoding='utf-8')
 PY
 set +e
-bash -x "$SCRIPT" > "$ROOT/final-artifact/build.log" 2>&1
+bash -x "$SCRIPT" > "$LOG" 2>&1
 status=$?
 set -e
+mkdir -p "$ROOT/final-artifact"
+cp "$LOG" "$ROOT/final-artifact/build.log"
 echo "$status" > "$ROOT/final-artifact/build-exit-code.txt"
-tail -n 250 "$ROOT/final-artifact/build.log" || true
-# Return success so the existing workflow uploads the diagnostic artifact.
+tail -n 250 "$LOG" || true
 exit 0
