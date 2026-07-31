@@ -27,24 +27,77 @@ echo '0cb55a214feec2c2c064b8b27e0f8e99ac2e3f452d2656972d7a4da513ca0352  '"$MAIN_
 python3 - "$MAIN_ACTIVITY" <<'PY'
 from pathlib import Path
 import sys
+
 path = Path(sys.argv[1])
 text = path.read_text(encoding='utf-8')
+
 if text.count('BuildConfig.DEBUG') != 2:
     raise SystemExit('Unexpected BuildConfig.DEBUG occurrence count')
 text = text.replace('BuildConfig.DEBUG', 'isDebuggable()')
-needle = '    private String resolveDeviceModel() {\n'
+
+package_needle = 'package dev.decimen.optical;\n\n'
+if text.count(package_needle) != 1:
+    raise SystemExit('Package declaration insertion point missing')
+text = text.replace(package_needle,
+                    package_needle + 'import android.annotation.SuppressLint;\n', 1)
+
+configure_needle = '    private void configureWebView() {\n'
+if text.count(configure_needle) != 1:
+    raise SystemExit('configureWebView insertion point missing')
+text = text.replace(configure_needle,
+                    '    @SuppressLint("SetJavaScriptEnabled")\n' + configure_needle, 1)
+
+bridge_needle = '    private void installSaveBridge() {\n'
+if text.count(bridge_needle) != 1:
+    raise SystemExit('installSaveBridge insertion point missing')
+text = text.replace(bridge_needle,
+                    '    @SuppressLint("RequiresFeature")\n' + bridge_needle, 1)
+
+resolve_needle = '    private String resolveDeviceModel() {\n'
 helper = (
     '    private boolean isDebuggable() {\n'
     '        return (getApplicationInfo().flags\n'
     '                & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;\n'
     '    }\n\n'
 )
-if text.count(needle) != 1:
+if text.count(resolve_needle) != 1:
     raise SystemExit('resolveDeviceModel insertion point missing')
-path.write_text(text.replace(needle, helper + needle), encoding='utf-8')
+text = text.replace(resolve_needle, helper + resolve_needle, 1)
+
+feature_guard = 'WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)'
+listener_call = 'WebViewCompat.addWebMessageListener('
+if text.count(feature_guard) != 1 or text.count(listener_call) != 1:
+    raise SystemExit('Unexpected WebMessage feature guard or listener count')
+if text.index(feature_guard) > text.index(listener_call):
+    raise SystemExit('WebMessage listener is not preceded by its feature guard')
+
+required_hardening = (
+    'settings.setAllowFileAccess(false);',
+    'settings.setAllowContentAccess(false);',
+    'settings.setBlockNetworkLoads(true);',
+    'settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);',
+    'CookieManager.getInstance().setAcceptCookie(false);',
+)
+for statement in required_hardening:
+    if text.count(statement) != 1:
+        raise SystemExit(f'Missing or duplicated WebView hardening statement: {statement}')
+
+path.write_text(text, encoding='utf-8')
 PY
 ! grep -q 'BuildConfig.DEBUG' "$MAIN_ACTIVITY"
 grep -q 'ApplicationInfo.FLAG_DEBUGGABLE' "$MAIN_ACTIVITY"
+grep -q '@SuppressLint("SetJavaScriptEnabled")' "$MAIN_ACTIVITY"
+grep -q '@SuppressLint("RequiresFeature")' "$MAIN_ACTIVITY"
+
+ICON_V26="$WORK/android/app/src/main/res/mipmap-anydpi-v26"
+ICON_CURRENT="$WORK/android/app/src/main/res/mipmap-anydpi"
+test -d "$ICON_V26"
+mkdir -p "$ICON_CURRENT"
+mv "$ICON_V26"/*.xml "$ICON_CURRENT"/
+rmdir "$ICON_V26"
+grep -q '<monochrome ' "$ICON_CURRENT/ic_launcher.xml"
+grep -q '<monochrome ' "$ICON_CURRENT/ic_launcher_round.xml"
+
 cp "$ROOT/VERIFICATION.md" "$WORK/VERIFICATION.md"
 
 pushd "$WORK/web"
