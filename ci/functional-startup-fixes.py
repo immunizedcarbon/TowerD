@@ -34,14 +34,27 @@ def main() -> None:
     for html in html_files:
         replace_all_checked(html, "connect-src 'none'", "connect-src 'self'", 1, f"same-origin CSP {html.name}")
 
-    # Force Vite to embed the matching ZXing binary as a data URL. Emscripten
-    # decodes data URIs locally, so no fetch/XHR is needed on Android WebView.
     worker = web / "receive/worker.ts"
     replace_once(
         worker,
-        'import wasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";',
-        'import wasmUrl from "zxing-wasm/reader/zxing_reader.wasm?inline";',
-        "inline ZXing reader WASM",
+        '''import wasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
+import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
+
+prepareZXingModule({
+  overrides: {
+    locateFile: (path: string, prefix: string) =>
+      path.endsWith(".wasm") ? wasmUrl : prefix + path,
+  },
+});''',
+        '''import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
+import { zxingWasmBinary } from "./zxing-wasm-inline";
+
+prepareZXingModule({
+  overrides: {
+    wasmBinary: zxingWasmBinary,
+  },
+});''',
+        "embedded ZXing reader WASM",
     )
 
     send_html = web / "send/index.html"
