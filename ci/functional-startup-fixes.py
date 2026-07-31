@@ -28,12 +28,21 @@ def main() -> None:
     web = Path(sys.argv[1])
     android = Path(sys.argv[2])
 
-    # Embedded resources such as the ZXing WASM module are same-origin fetches.
-    # External traffic remains impossible because the native WebView blocks it
-    # and the Android manifest intentionally has no INTERNET permission.
+    # Local sample assets remain same-origin. External traffic is still blocked
+    # by the native WebView and the manifest has no INTERNET permission.
     html_files = [web / "index.html", web / "send/index.html", web / "receive/index.html"]
     for html in html_files:
         replace_all_checked(html, "connect-src 'none'", "connect-src 'self'", 1, f"same-origin CSP {html.name}")
+
+    # Force Vite to embed the matching ZXing binary as a data URL. Emscripten
+    # decodes data URIs locally, so no fetch/XHR is needed on Android WebView.
+    worker = web / "receive/worker.ts"
+    replace_once(
+        worker,
+        'import wasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";',
+        'import wasmUrl from "zxing-wasm/reader/zxing_reader.wasm?inline";',
+        "inline ZXing reader WASM",
+    )
 
     send_html = web / "send/index.html"
     replace_once(
