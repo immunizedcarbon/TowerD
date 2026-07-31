@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${GITHUB_WORKSPACE:-$(pwd)}"
+ROOT="${DECIMEN_ROOT:-${GITHUB_WORKSPACE:-$(pwd)}}"
+export DECIMEN_ROOT="$ROOT"
 WORK="$ROOT/final-work"
 ARTIFACT="$ROOT/final-artifact"
 rm -rf "$WORK" "$ARTIFACT"
@@ -30,7 +31,7 @@ npm run check
 npm run build
 npm audit --json > "$WORK/npm-audit.json" || true
 node - <<'NODE'
-const report = require(process.env.GITHUB_WORKSPACE + '/final-work/npm-audit.json');
+const report = require(process.env.DECIMEN_ROOT + '/final-work/npm-audit.json');
 const v = report.metadata?.vulnerabilities ?? {};
 const total = (v.low || 0) + (v.moderate || 0) + (v.high || 0) + (v.critical || 0);
 console.log('npm audit:', v);
