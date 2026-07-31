@@ -22,7 +22,10 @@ grep -qx 36 "$OUT/reports/target-sdk.txt"
 unzip -Z1 "$APK" | grep -q '^assets/index.html$'
 unzip -Z1 "$APK" | grep -q '^assets/send/index.html$'
 unzip -Z1 "$APK" | grep -q '^assets/receive/index.html$'
-unzip -Z1 "$APK" | grep -Eq '^assets/assets/zxing_reader.*\.wasm$'
+if unzip -Z1 "$APK" | grep -Eq '^assets/assets/zxing_reader.*\.wasm$'; then
+  echo 'Unexpected separately fetched ZXing WASM file in APK' >&2
+  exit 1
+fi
 unzip -t "$APK" > "$OUT/reports/unzip-test.txt"
 cp "$APK" "$OUT/Decimen-Optical-Transfer-0.4.0.apk"
 cp "$APK" "$OUT/Decimen-Optical-Transfer-0.3.0-hardened.apk"
