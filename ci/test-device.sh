@@ -18,12 +18,15 @@ mkdir -p "$EVIDENCE"
 SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 AVDMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
 IMAGE_ID="system-images;android-${API};${IMAGE};x86_64"
+EXPECTED_SDK="${API%%.*}"
 
 yes | "$SDKMANAGER" --licenses >/dev/null || true
-"$SDKMANAGER" "platform-tools" "emulator" "$IMAGE_ID"
+"$SDKMANAGER" --channel=3 "platform-tools" "emulator" "$IMAGE_ID"
 sudo chmod 666 /dev/kvm || true
 
-echo no | "$AVDMANAGER" create avd --force --name decimen-test --package "$IMAGE_ID" --device pixel_8
+# Width, height, density, memory and rotation are set explicitly below. Avoid a
+# named Studio hardware profile because those identifiers vary between SDK releases.
+echo no | "$AVDMANAGER" create avd --force --name decimen-test --package "$IMAGE_ID"
 cat >> "$HOME/.android/avd/decimen-test.avd/config.ini" <<EOF
 hw.cpu.ncore=4
 hw.keyboard=yes
@@ -73,6 +76,12 @@ adb shell getprop > "$EVIDENCE/device-properties.txt"
 adb shell wm size > "$EVIDENCE/display-size.txt"
 adb shell wm density > "$EVIDENCE/display-density.txt"
 
+ACTUAL_SDK="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+if [ "$ACTUAL_SDK" != "$EXPECTED_SDK" ]; then
+  echo "System image SDK mismatch: expected $EXPECTED_SDK, got $ACTUAL_SDK" >&2
+  exit 1
+fi
+
 adb logcat -c
 adb install -r -t "$ARTIFACT/app-debug.apk"
 adb install -r -t "$ARTIFACT/app-debug-androidTest.apk"
@@ -81,7 +90,7 @@ adb shell pm grant dev.decimen.optical.debug android.permission.CAMERA
 timeout 600 adb shell am instrument -w -r \
   -e class dev.decimen.optical.DeviceCompatibilityTest \
   -e profile "$PROFILE" \
-  -e expected_sdk "$API" \
+  -e expected_sdk "$EXPECTED_SDK" \
   -e expected_width "$WIDTH" \
   -e expected_height "$HEIGHT" \
   dev.decimen.optical.debug.test/androidx.test.runner.AndroidJUnitRunner \
@@ -110,7 +119,8 @@ fi
 
 cat > "$EVIDENCE/RESULT.txt" <<EOF
 profile=$PROFILE
-api=$API
+api_package=$API
+runtime_sdk=$EXPECTED_SDK
 resolution=${WIDTH}x${HEIGHT}
 density=$DENSITY
 ram_mb=$RAM
