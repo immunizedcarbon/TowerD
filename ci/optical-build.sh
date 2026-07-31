@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${GITHUB_WORKSPACE:-$(pwd)}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 INPUT="$ROOT/optical-transfer-build"
 WORK="$ROOT/optical-transfer-v020-work"
 ARTIFACT="$ROOT/final-artifact"
