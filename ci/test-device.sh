@@ -19,6 +19,9 @@ SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 AVDMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
 IMAGE_ID="system-images;android-${API};${IMAGE};x86_64"
 EXPECTED_SDK="${API%%.*}"
+AVD_NAME="decimen-test"
+AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
+AVD_DIR="$AVD_HOME/$AVD_NAME.avd"
 
 yes | "$SDKMANAGER" --licenses >/dev/null || true
 "$SDKMANAGER" --channel=3 "platform-tools" "emulator" "$IMAGE_ID"
@@ -26,8 +29,26 @@ sudo chmod 666 /dev/kvm || true
 
 # Width, height, density, memory and rotation are set explicitly below. Avoid a
 # named Studio hardware profile because those identifiers vary between SDK releases.
-echo no | "$AVDMANAGER" create avd --force --name decimen-test --package "$IMAGE_ID"
-cat >> "$HOME/.android/avd/decimen-test.avd/config.ini" <<EOF
+mkdir -p "$AVD_HOME"
+rm -rf "$AVD_DIR" "$AVD_HOME/$AVD_NAME.ini"
+printf 'no\n' | "$AVDMANAGER" create avd \
+  --force \
+  --name "$AVD_NAME" \
+  --package "$IMAGE_ID" \
+  --path "$AVD_DIR"
+for attempt in $(seq 1 30); do
+  if [ -f "$AVD_DIR/config.ini" ]; then
+    break
+  fi
+  sleep 1
+done
+if [ ! -f "$AVD_DIR/config.ini" ]; then
+  echo "AVD configuration was not created at $AVD_DIR" >&2
+  find "$HOME/.android" -maxdepth 4 -type f -print 2>/dev/null || true
+  "$AVDMANAGER" list avd || true
+  exit 1
+fi
+cat >> "$AVD_DIR/config.ini" <<EOF
 hw.cpu.ncore=4
 hw.keyboard=yes
 hw.gpu.enabled=yes
@@ -40,8 +61,9 @@ showDeviceFrame=no
 hw.ramSize=$RAM
 EOF
 
+export ANDROID_AVD_HOME="$AVD_HOME"
 export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
-nohup emulator @decimen-test -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
+nohup emulator "@$AVD_NAME" -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
   -gpu swiftshader_indirect -camera-back virtualscene -camera-front none \
   -memory "$RAM" -cores 4 -no-metrics > "$EVIDENCE/emulator.log" 2>&1 &
 EMULATOR_PID=$!
