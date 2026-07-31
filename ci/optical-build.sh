@@ -11,7 +11,6 @@ B64="$RUNNER_TEMP/OpticalTransfer-ci-v020.zip.b64"
 rm -rf "$WORK" "$ARTIFACT"
 mkdir -p "$WORK" "$ARTIFACT/reports"
 cat "$INPUT"/optical-ci-v020.b64.part* | tr -d '[:space:]' > "$B64"
-echo '3b5ea88cdace31c63d13c9afbbd36d7499d48f7c4c4e1a90d2ffd9cd03c6180d  '"$B64" | sha256sum --check --strict
 base64 --decode "$B64" > "$ARCHIVE"
 echo 'aa855d7345682ac97afab09f081d004dde311cfa0a0a42963850b881b0b74295  '"$ARCHIVE" | sha256sum --check --strict
 unzip -q "$ARCHIVE" -d "$WORK"
