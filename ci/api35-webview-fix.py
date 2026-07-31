@@ -20,6 +20,8 @@ def main() -> None:
     android = Path(sys.argv[1])
     activity = android / "app/src/main/java/dev/decimen/optical/MainActivity.java"
 
+    # Keep a deterministic local asset handler and explicit MIME types. The
+    # decoder WASM itself is now inline and never uses fetch/XHR.
     replace_once(
         activity,
         '''                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
@@ -35,16 +37,6 @@ def main() -> None:
                 })
                 .build();''',
         "custom local asset handler",
-    )
-
-    replace_once(
-        activity,
-        "        settings.setBlockNetworkLoads(true);",
-        '''        // appassets uses an HTTPS-shaped local origin. Android 15 WebView needs
-        // network-shaped requests enabled for synchronous WASM XHR. Every non-appassets
-        // request is still rejected by LockedWebViewClient, and the manifest has no INTERNET permission.
-        settings.setBlockNetworkLoads(false);''',
-        "allow intercepted appassets requests",
     )
 
     marker = '''    private static WebResourceResponse blockedResponse() {
