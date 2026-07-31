@@ -16,4 +16,5 @@ mkdir -p "$ANDROID/app/src/main/java/dev/decimen/optical" "$ANDROID/app/src/andr
 cat "$ROOT"/android-src-parts/MainActivity.java.part* > "$ANDROID/app/src/main/java/dev/decimen/optical/MainActivity.java"
 cat "$ROOT"/android-src-parts/DeviceCompatibilityTest.java.part* > "$ANDROID/app/src/androidTest/java/dev/decimen/optical/DeviceCompatibilityTest.java"
 python3 "$ROOT/ci/final-functional-fixes.py" "$WEB" "$ANDROID"
+python3 "$ROOT/ci/functional-startup-fixes.py" "$WEB" "$ANDROID"
 sed -i 's/targetSdk 37/targetSdk 36/' "$ANDROID/app/build.gradle"
