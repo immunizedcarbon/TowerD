@@ -1,0 +1,1 @@
+Functional release verification after internal routing, WASM startup, and display inset repairs.
