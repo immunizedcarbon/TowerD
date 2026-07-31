@@ -1,10 +1,10 @@
-# Decimen Optical Transfer 0.2.0 — Sicherheits- und Kompatibilitätsprüfung
+# Decimen Optical Transfer 0.3.0 — Sicherheits- und Kompatibilitätsprüfung
 
 ## Zielgeräte
 
-- Google Pixel 9a: Android 16/API 36, 1080 × 2424, gerätespezifisches Pixel-9a-Profil.
-- Google Pixel 8a: Android 16/API 36, 1080 × 2400, gerätespezifisches Pixel-8a-Profil.
-- Samsung Galaxy Tab S5e LTE (`gts4lv`, Modelle SM-T725/SM-T727): LineageOS 22.2 auf Android 15/API 35, 1600 × 2560, 4-GB-Konservativprofil.
+- Google Pixel 9a: stabile Android-17-Plattform/API 37, 1080 × 2424, gerätespezifisches Pixel-9a-Profil.
+- Google Pixel 8a: stabile Android-17-Plattform/API 37, 1080 × 2400, gerätespezifisches Pixel-8a-Profil.
+- Samsung Galaxy Tab S5e LTE (`gts4lv`, Modelle SM-T725/SM-T727): LineageOS 22.2 auf Android 15/API 35, 1600 × 2560, konservatives 3-GB-Emulatorprofil unterhalb der physischen 4-GB-Ausstattung.
 
 ## Sicherheitsänderungen gegenüber dem Upstream-Prototyp
 
@@ -18,7 +18,15 @@
 - WebView-Datei- und Content-Zugriff sind deaktiviert; nur gebündelte Assets unter `appassets.androidplatform.net` werden geladen.
 - Fremde Navigation, Downloads, SSL-Ausnahmen, Audioaufnahme und nicht angeforderte WebView-Ressourcen werden abgelehnt.
 - Kamera wird nur auf der lokalen Empfangsseite freigegeben und beim Hintergrundwechsel beendet.
+- Bildschirm-Wakelocks werden beim Pausieren und beim Wechsel in den Hintergrund freigegeben.
 - Release-Build ist nicht debuggbar, R8-optimiert und mit einer isolierten Release-Signatur versehen.
+
+## Moderne Android-Basis
+
+- Mindest-SDK 35 für LineageOS 22.2/Android 15.
+- Ziel- und Compile-SDK 37 für Android 17.
+- Android Gradle Plugin 9.3.1, Gradle 9.5 und Java 17.
+- Eine architekturunabhängige APK ohne native ABI-Bibliotheken; dieselbe Datei läuft auf den ARM64-Zielgeräten.
 
 ## Automatisierte Prüfungen
 
@@ -27,8 +35,7 @@
 - Semgrep über TypeScript, JavaScript und Android-Java.
 - Android Lint für den Release-Build.
 - APK-Signaturprüfung, Manifestprüfung und SHA-256-Prüfsumme.
-- Verifikation: Mindest-SDK 35, Ziel-SDK 36, `CAMERA` vorhanden, `INTERNET` nicht vorhanden, Release nicht debuggbar.
-- Kein nativer ABI-Code in der APK; damit ist dieselbe APK auf den ARM64-Zielgeräten installierbar, obwohl CI-Emulatoren x86_64 verwenden.
+- Verifikation: Mindest-SDK 35, Ziel-SDK 37, `CAMERA` vorhanden, `INTERNET` nicht vorhanden, Release nicht debuggbar.
 - Gerätematrix: lokaler Selbsttest (Fountain-Code, Frameverlust, SHA-256, feindlicher Header, QR-Encode/ZXing-WASM-Decode), Sender-Rendering, Kameraöffnung, blockierter Netzwerkzugriff und signierter Release-Start.
 
 ## Aussagegrenze
