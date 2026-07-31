@@ -89,7 +89,7 @@ grep -q android.permission.CAMERA "$WORK/manifest-permissions.txt"
 ! grep -q android.permission.INTERNET "$WORK/manifest-permissions.txt"
 grep -qx false "$WORK/manifest-debuggable.txt"
 grep -qx 35 "$WORK/manifest-min-sdk.txt"
-grep -qx 36 "$WORK/manifest-target-sdk.txt"
+grep -qx 37 "$WORK/manifest-target-sdk.txt"
 if unzip -Z1 "$APK" | grep -q '^lib/'; then
   echo 'Unexpected native ABI library in release APK' >&2
   exit 1
@@ -99,7 +99,7 @@ unzip -Z1 "$APK" | grep -q 'assets/www/send/index.html'
 unzip -Z1 "$APK" | grep -q 'assets/www/receive/index.html'
 unzip -Z1 "$APK" | grep -Eq 'zxing_reader.*\.wasm'
 
-cp "$APK" "$ARTIFACT/Decimen-Optical-Transfer-0.2.0-hardened.apk"
+cp "$APK" "$ARTIFACT/Decimen-Optical-Transfer-0.3.0-hardened.apk"
 cp "$DEBUG_APK" "$ARTIFACT/app-debug.apk"
 cp "$TEST_APK" "$ARTIFACT/app-debug-androidTest.apk"
 cp "$WORK/VERIFICATION.md" "$ARTIFACT/"
@@ -109,6 +109,6 @@ cp "$WORK/npm-audit.json" "$WORK/semgrep.json" "$WORK/apksigner-report.txt" \
 cp -a "$WORK/android/app/build/reports/lint-results-release."* "$ARTIFACT/reports/" 2>/dev/null || true
 (
   cd "$ARTIFACT"
-  sha256sum Decimen-Optical-Transfer-0.2.0-hardened.apk > SHA256SUMS.txt
+  sha256sum Decimen-Optical-Transfer-0.3.0-hardened.apk > SHA256SUMS.txt
 )
 cat "$ARTIFACT/SHA256SUMS.txt"
