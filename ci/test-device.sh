@@ -161,6 +161,7 @@ adb install -r -t "$ARTIFACT/app-debug.apk"
 adb install -r -t "$ARTIFACT/app-debug-androidTest.apk"
 adb shell pm grant dev.decimen.optical.debug android.permission.CAMERA
 
+set +e
 timeout 600 adb shell am instrument -w -r \
   -e class dev.decimen.optical.DeviceCompatibilityTest \
   -e profile "$PROFILE" \
@@ -169,11 +170,20 @@ timeout 600 adb shell am instrument -w -r \
   -e expected_height "$HEIGHT" \
   dev.decimen.optical.debug.test/androidx.test.runner.AndroidJUnitRunner \
   | tee "$EVIDENCE/instrumentation.txt"
-grep -q '^OK (' "$EVIDENCE/instrumentation.txt"
+INSTRUMENTATION_EXIT=${PIPESTATUS[0]}
+set -e
 
 adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
 adb pull /sdcard/window.xml "$EVIDENCE/window.xml" >/dev/null 2>&1 || true
+adb exec-out screencap -p > "$EVIDENCE/instrumentation-screen.png" || true
+adb logcat -d -v threadtime > "$EVIDENCE/instrumentation-logcat.txt" || true
+adb shell dumpsys activity top > "$EVIDENCE/instrumentation-activity.txt" || true
 adb pull /sdcard/Android/data/dev.decimen.optical.debug/files "$EVIDENCE/debug-files" >/dev/null 2>&1 || true
+
+if [ "$INSTRUMENTATION_EXIT" -ne 0 ] || ! grep -q '^OK (' "$EVIDENCE/instrumentation.txt"; then
+  echo "Instrumentation failed with exit code $INSTRUMENTATION_EXIT; diagnostic evidence captured" >&2
+  exit 1
+fi
 
 adb uninstall dev.decimen.optical.debug.test || true
 adb uninstall dev.decimen.optical.debug || true
