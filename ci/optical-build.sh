@@ -10,7 +10,7 @@ B64="$RUNNER_TEMP/OpticalTransfer-ci-v020.zip.b64"
 
 rm -rf "$WORK" "$ARTIFACT"
 mkdir -p "$WORK" "$ARTIFACT/reports"
-cat "$INPUT"/optical-ci-v020.b64.part* > "$B64"
+cat "$INPUT"/optical-ci-v020.b64.part* | tr -d '[:space:]' > "$B64"
 echo '3b5ea88cdace31c63d13c9afbbd36d7499d48f7c4c4e1a90d2ffd9cd03c6180d  '"$B64" | sha256sum --check --strict
 base64 --decode "$B64" > "$ARCHIVE"
 echo 'aa855d7345682ac97afab09f081d004dde311cfa0a0a42963850b881b0b74295  '"$ARCHIVE" | sha256sum --check --strict
@@ -19,7 +19,8 @@ unzip -q "$ARCHIVE" -d "$WORK"
 PROJECT="$WORK/OpticalTransfer"
 MAIN="$PROJECT/app/src/main/java/de/oai/opticaltransfer/MainActivity.kt"
 ASSEMBLER="$PROJECT/app/src/main/java/de/oai/opticaltransfer/ReceiverAssembler.kt"
-python3 - "$MAIN" "$ASSEMBLER" <<'PY'
+PROFILE="$PROJECT/app/src/main/java/de/oai/opticaltransfer/DeviceProfile.kt"
+python3 - "$MAIN" "$ASSEMBLER" "$PROFILE" <<'PY'
 from pathlib import Path
 import sys
 
@@ -41,7 +42,36 @@ old = 'private fun acceptMeta(incoming: OpticalProtocol.Metadata): Update {'
 new = 'private fun acceptMeta(incoming: OpticalProtocol.Metadata): Update? {'
 if text.count(old) != 1:
     raise SystemExit('Unexpected acceptMeta declaration')
-assembler.write_text(text.replace(old, new, 1), encoding='utf-8')
+text = text.replace(old, new, 1)
+marker = '    private var announcedWaitingForMetadata = false\n'
+if text.count(marker) != 1:
+    raise SystemExit('Receiver state insertion point missing')
+text = text.replace(marker, marker + '    private var closed = false\n', 1)
+accept = '    fun accept(decoded: QrCodec.Decoded): Update? {\n        return when'
+if text.count(accept) != 1:
+    raise SystemExit('Receiver accept insertion point missing')
+text = text.replace(accept, '    fun accept(decoded: QrCodec.Decoded): Update? {\n        if (closed) return null\n        return when', 1)
+close = '    override fun close() {\n        reset(deleteFile = true)'
+if text.count(close) != 1:
+    raise SystemExit('Receiver close insertion point missing')
+text = text.replace(close, '    override fun close() {\n        closed = true\n        reset(deleteFile = true)', 1)
+assembler.write_text(text, encoding='utf-8')
+
+profile = Path(sys.argv[3])
+text = profile.read_text(encoding='utf-8')
+replacements = {
+    'isTabS5e -> DeviceProfile(framesPerSecond = 10, minimumPixelsPerModule = 7)':
+        'isTabS5e -> DeviceProfile(framesPerSecond = 10, minimumPixelsPerModule = 8)',
+    'isTablet -> DeviceProfile(framesPerSecond = fps.coerceAtMost(10), minimumPixelsPerModule = 7)':
+        'isTablet -> DeviceProfile(framesPerSecond = fps.coerceAtMost(10), minimumPixelsPerModule = 8)',
+    'else -> DeviceProfile(framesPerSecond = fps, minimumPixelsPerModule = 6)':
+        'else -> DeviceProfile(framesPerSecond = fps, minimumPixelsPerModule = 7)',
+}
+for old, new in replacements.items():
+    if text.count(old) != 1:
+        raise SystemExit(f'Device profile pattern missing: {old}')
+    text = text.replace(old, new, 1)
+profile.write_text(text, encoding='utf-8')
 PY
 
 grep -q 'versionName = "0.2.0"' "$PROJECT/app/build.gradle.kts"
