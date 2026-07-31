@@ -40,14 +40,19 @@ def main() -> None:
         '''import wasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
 import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 
+const MAX_PIXELS = 1_300_000;
+const MAX_SIDE = 1600;
+
 prepareZXingModule({
   overrides: {
-    locateFile: (path: string, prefix: string) =>
-      path.endsWith(".wasm") ? wasmUrl : prefix + path,
+    locateFile: (path: string, prefix: string) => (path.endsWith(".wasm") ? wasmUrl : prefix + path),
   },
 });''',
         '''import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
 import { zxingWasmBinary } from "./zxing-wasm-inline";
+
+const MAX_PIXELS = 1_300_000;
+const MAX_SIDE = 1600;
 
 prepareZXingModule({
   overrides: {
