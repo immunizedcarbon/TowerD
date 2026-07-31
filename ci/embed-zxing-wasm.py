@@ -30,7 +30,7 @@ def main() -> None:
           "for (let index = 0; index < decoded.length; index += 1) {\n"
           "  bytes[index] = decoded.charCodeAt(index);\n"
           "}\n"
-          "export const zxingWasmBinary: Uint8Array = bytes;\n",
+          "export const zxingWasmBinary: ArrayBuffer = bytes.buffer as ArrayBuffer;\n",
         encoding="utf-8",
     )
 
