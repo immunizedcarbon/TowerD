@@ -1,0 +1,170 @@
+package dev.decimen.optical;
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Bundle;
+import android.provider.OpenableColumns;
+import android.util.Base64;
+import android.util.Log;
+import android.view.ViewGroup;
+import android.webkit.ConsoleMessage;
+import android.webkit.CookieManager;
+import android.webkit.PermissionRequest;
+import android.webkit.SafeBrowsingResponse;
+import android.webkit.SslErrorHandler;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.Toast;
+
+import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.webkit.JavaScriptReplyProxy;
+import androidx.webkit.WebMessageCompat;
+import androidx.webkit.WebViewAssetLoader;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Locale;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+public final class MainActivity extends ComponentActivity {
+    public static final String EXTRA_TEST_PROFILE = "dev.decimen.optical.TEST_PROFILE";
+
+    private static final String TAG = "Decimen";
+    private static final String APP_ORIGIN = "https://appassets.androidplatform.net";
+    private static final String ASSET_ROOT = "/assets/www/";
+    private static final String HOME_URL = APP_ORIGIN + ASSET_ROOT + "index.html";
+    private static final String SEND_PATH = ASSET_ROOT + "send/index.html";
+    private static final String RECEIVE_PATH = ASSET_ROOT + "receive/index.html";
+    private static final int MAX_FILE_BYTES = 4 * 1024 * 1024;
+    private static final int MAX_CHUNK_BYTES = 192 * 1024;
+    private static final Pattern SAFE_ID = Pattern.compile("^[a-f0-9]{16,64}$");
+    private static final Pattern SAFE_MIME = Pattern.compile("^[\\w.+-]+/[\\w.+-]+(?:;[\\w .+\\-=]+)?$");
+    private static final Pattern SHA256_HEX = Pattern.compile("^[a-f0-9]{64}$");
+
+    private WebView webView;
+    private WebViewAssetLoader assetLoader;
+    private ActivityResultLauncher<Intent> openDocumentLauncher;
+    private ActivityResultLauncher<Intent> createDocumentLauncher;
+    private ActivityResultLauncher<String> cameraPermissionLauncher;
+    private ValueCallback<Uri[]> fileChooserCallback;
+    private PermissionRequest pendingCameraRequest;
+    private PendingSave pendingSave;
+    private ReadySave readySave;
+    private boolean rendererRecoveryAttempted;
+
+    @Override
+    protected void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        WindowCompat.enableEdgeToEdge(getWindow());
+        registerActivityResults();
+        configureWebView();
+        setContentView(webView);
+        applySystemInsets();
+        configureBackNavigation();
+        webView.loadUrl(HOME_URL);
+    }
+
+    private void registerActivityResults() {
+        openDocumentLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    ValueCallback<Uri[]> callback = fileChooserCallback;
+                    fileChooserCallback = null;
+                    if (callback == null) return;
+                    if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
+                        callback.onReceiveValue(null);
+                        return;
+                    }
+                    Uri uri = result.getData().getData();
+                    if (uri == null || !isAcceptableInput(uri)) {
+                        callback.onReceiveValue(null);
+                        Toast.makeText(this, "Datei ist leer oder größer als 4 MB.", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    try {
+                        getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    } catch (SecurityException ignored) {
+                        // Temporary read permission from ACTION_OPEN_DOCUMENT remains sufficient.
+                    }
+                    callback.onReceiveValue(new Uri[]{uri});
+                });
+
+        createDocumentLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    ReadySave save = readySave;
+                    readySave = null;
+                    if (save == null) return;
+                    if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null
+                            || result.getData().getData() == null) {
+                        save.clear();
+                        postSaveStatus(false, "Speichern wurde abgebrochen.");
+                        return;
+                    }
+                    Uri target = result.getData().getData();
+                    try (OutputStream output = getContentResolver().openOutputStream(target, "w")) {
+                        if (output == null) throw new IOException("Kein Schreibzugriff auf das gewählte Ziel");
+                        output.write(save.bytes);
+                        output.flush();
+                        postSaveStatus(true, "Datei wurde sicher gespeichert.");
+                    } catch (IOException error) {
+                        Log.e(TAG, "Saving verified transfer failed", error);
+                        postSaveStatus(false, "Speichern fehlgeschlagen: " + safeMessage(error));
+                    } finally {
+                        save.clear();
+                    }
+                });
+
+        cameraPermissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestPermission(),
+                granted -> {
+                    PermissionRequest request = pendingCameraRequest;
+                    pendingCameraRequest = null;
+                    if (request == null) return;
+                    if (granted && isReceivePage() && isTrustedOrigin(request.getOrigin())
+                            && requestsVideoOnly(request.getResources())) {
+                        request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                    } else {
+                        request.deny();
+                    }
+                });
+    }
+
+    private void configureWebView() {
+        assetLoader = new WebViewAssetLoader.Builder()
+                .setDomain("appassets.androidplatform.net")
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
+
+        webView = new WebView(this);

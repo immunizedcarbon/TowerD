@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT="$ROOT/project-functional"
+WEB="$PROJECT/web"
+ANDROID="$PROJECT/android"
+rm -rf "$PROJECT" "$ROOT/final-artifact"
+mkdir -p "$PROJECT" "$ROOT/final-artifact/reports"
+git clone --filter=blob:none https://github.com/bashalarmistalt/decimen-optical-transfer.git "$WEB"
+git -C "$WEB" checkout --detach 13e86c26a187882637015b9267bb0361d67f1033
+cat "$ROOT"/web-hardening.patch.gz.b64.part* | tr -d '[:space:]' | base64 --decode | gzip -dc > "$RUNNER_TEMP/web-hardening.patch"
+git -C "$WEB" apply "$RUNNER_TEMP/web-hardening.patch"
+git -C "$WEB" apply "$ROOT/web-lifecycle-fix.patch"
+cp -a "$ROOT/android-src" "$ANDROID"
+mkdir -p "$ANDROID/app/src/main/java/dev/decimen/optical" "$ANDROID/app/src/androidTest/java/dev/decimen/optical"
+cat "$ROOT"/android-src-parts/MainActivity.java.part* > "$ANDROID/app/src/main/java/dev/decimen/optical/MainActivity.java"
+cat "$ROOT"/android-src-parts/DeviceCompatibilityTest.java.part* > "$ANDROID/app/src/androidTest/java/dev/decimen/optical/DeviceCompatibilityTest.java"
+python3 "$ROOT/ci/final-functional-fixes.py" "$WEB" "$ANDROID"
+python3 "$ROOT/ci/functional-startup-fixes.py" "$WEB" "$ANDROID"
+python3 "$ROOT/ci/api35-webview-fix.py" "$ANDROID"
+sed -i 's/targetSdk 37/targetSdk 36/' "$ANDROID/app/build.gradle"

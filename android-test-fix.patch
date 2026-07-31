@@ -1,0 +1,23 @@
+--- a/android/app/src/androidTest/java/dev/decimen/optical/DeviceCompatibilityTest.java
++++ b/android/app/src/androidTest/java/dev/decimen/optical/DeviceCompatibilityTest.java
+@@ -77,9 +77,9 @@
+                     value -> value.contains("SYSTEMCHECK BESTANDEN"), 90_000);
+             assertTrue(selfTest, selfTest.contains("SYSTEMCHECK BESTANDEN"));
+ 
+-            eval(scenario, "window.__decimenNetwork='pending';"
++            eval(scenario, "(window.__decimenNetwork='pending',"
+                     + "fetch('https://example.com/').then(()=>window.__decimenNetwork='UNSAFE')"
+-                    + ".catch(()=>window.__decimenNetwork='BLOCKED');'started'");
++                    + ".catch(()=>window.__decimenNetwork='BLOCKED'),'started')");
+             String network = waitForJs(scenario, "window.__decimenNetwork || ''",
+                     value -> value.contains("BLOCKED") || value.contains("UNSAFE"), 15_000);
+             assertTrue("External network access must remain blocked: " + network,
+@@ -97,7 +97,7 @@
+ 
+             load(scenario, ROOT + "receive/index.html");
+             waitForJs(scenario, "document.readyState", value -> value.contains("complete"), 30_000);
+-            eval(scenario, "document.getElementById('start')?.click();'clicked'");
++            eval(scenario, "(document.getElementById('start')?.click(),'clicked')");
+             String camera = waitForJs(scenario,
+                     "JSON.stringify({status:document.getElementById('stats')?.textContent||'',"
+                             + "stream:!!document.getElementById('video')?.srcObject,"

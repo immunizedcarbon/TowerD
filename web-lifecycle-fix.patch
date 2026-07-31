@@ -1,0 +1,160 @@
+diff --git a/main.ts b/main.ts
+new file mode 100644
+index 0000000..62fc3b0
+--- /dev/null
++++ b/main.ts
+@@ -0,0 +1,130 @@
++import QRCode from "qrcode";
++import wasmUrl from "zxing-wasm/reader/zxing_reader.wasm?url";
++import { prepareZXingModule, readBarcodes } from "zxing-wasm/reader";
++import { LTDecoder, LTEncoder } from "./shared/fountain";
++import {
++  MAX_ENVELOPE_BYTES,
++  buildEnvelope,
++  digestEqual,
++  packFrame,
++  parseEnvelope,
++  parseFrame,
++  sha256,
++  type FrameHeader,
++} from "./shared/protocol";
++
++prepareZXingModule({ overrides: { locateFile: (path: string, prefix: string) => (path.endsWith(".wasm") ? wasmUrl : prefix + path) } });
++
++const status = document.getElementById("selftest-status")!;
++const details = document.getElementById("selftest-details")!;
++const runButton = document.getElementById("selftest-run") as HTMLButtonElement;
++let running = false;
++
++function renderQr(bytes: Uint8Array): ImageData {
++  const qr = QRCode.create([{ data: bytes, mode: "byte" } as unknown as QRCode.QRCodeSegment], {
++    errorCorrectionLevel: "M",
++    maskPattern: 4,
++  });
++  const margin = 4;
++  const scale = 5;
++  const size = qr.modules.size;
++  const total = size + margin * 2;
++  const canvas = document.createElement("canvas");
++  canvas.width = total * scale;
++  canvas.height = total * scale;
++  const ctx = canvas.getContext("2d", { willReadFrequently: true });
++  if (!ctx) throw new Error("Canvas unavailable");
++  ctx.fillStyle = "#fff";
++  ctx.fillRect(0, 0, canvas.width, canvas.height);
++  ctx.fillStyle = "#000";
++  for (let y = 0; y < size; y++) {
++    for (let x = 0; x < size; x++) {
++      if (qr.modules.data[y * size + x]) {
++        ctx.fillRect((x + margin) * scale, (y + margin) * scale, scale, scale);
++      }
++    }
++  }
++  return ctx.getImageData(0, 0, canvas.width, canvas.height);
++}
++
++async function runSelfTest(): Promise<void> {
++  if (running) return;
++  running = true;
++  runButton.disabled = true;
++  status.className = "status pending";
++  status.textContent = "Systemcheck läuft …";
++  details.textContent = "WebCrypto, Fountain-Code, Protokollgrenzen, QR-Erzeugung und ZXing-WASM werden geprüft.";
++  const started = performance.now();
++  try {
++    if (!isSecureContext) throw new Error("Kein sicherer Web-Kontext");
++    if (!globalThis.WebAssembly || !globalThis.Worker || !crypto?.subtle) {
++      throw new Error("Erforderliche Plattformfunktion fehlt");
++    }
++
++    const file = new Uint8Array(48 * 1024);
++    for (let i = 0; i < file.length; i++) file[i] = (Math.imul(i + 17, 31) ^ (i >>> 3)) & 0xff;
++    const envelope = buildEnvelope(file, "self-test.bin", "application/octet-stream");
++    const digest = await sha256(envelope);
++    const blockLen = 700;
++    const sessionId = 0x72a91b35;
++    const encoder = new LTEncoder(envelope, blockLen, sessionId);
++    const decoder = new LTDecoder(encoder.k, blockLen, sessionId, envelope.length);
++    const header: FrameHeader = {
++      sessionId,
++      seq: 0,
++      k: encoder.k,
++      blockLen,
++      totalLen: envelope.length,
++      digest,
++    };
++
++    let firstFrame: Uint8Array | null = null;
++    const limit = Math.ceil(encoder.k * 3);
++    for (let seq = 0; seq < limit && !decoder.isComplete; seq++) {
++      if (seq % 7 === 3) continue;
++      const packed = packFrame({ ...header, seq }, encoder.encode(seq));
++      firstFrame ??= packed;
++      const parsed = parseFrame(packed);
++      if (!parsed) throw new Error("Gültiger Protokollrahmen wurde abgelehnt");
++      decoder.addFrame(parsed.header.seq, parsed.block);
++    }
++    if (!decoder.isComplete) throw new Error("Fountain-Rundlauf nicht vollständig");
++    const assembled = decoder.assemble();
++    if (!assembled || !digestEqual(await sha256(assembled), digest)) {
++      throw new Error("SHA-256-Rundlauf fehlgeschlagen");
++    }
++    const parsedEnvelope = parseEnvelope(assembled);
++    if (!parsedEnvelope || parsedEnvelope.data.length !== file.length) {
++      throw new Error("Dateihülle konnte nicht rekonstruiert werden");
++    }
++    for (let i = 0; i < file.length; i++) {
++      if (parsedEnvelope.data[i] !== file[i]) throw new Error("Nutzdaten weichen ab");
++    }
++
++    const hostile = firstFrame!.slice();
++    new DataView(hostile.buffer).setUint32(16, MAX_ENVELOPE_BYTES + 1, true);
++    if (parseFrame(hostile) !== null) throw new Error("Größenlimit greift nicht");
++
++    const image = renderQr(firstFrame!);
++    const decoded = await readBarcodes(image, { formats: ["QRCode"], maxNumberOfSymbols: 1 });
++    const candidate = decoded.find((item) => item.isValid && item.bytes.length === firstFrame!.length);
++    if (!candidate || !digestEqual(candidate.bytes, firstFrame!)) {
++      throw new Error("ZXing-WASM konnte den Test-QR nicht verlustfrei lesen");
++    }
++
++    const elapsed = Math.round(performance.now() - started);
++    status.className = "status ok";
++    status.textContent = "SYSTEMCHECK BESTANDEN";
++    details.textContent = `Alle lokalen Kernfunktionen erfolgreich · ${encoder.k} Blöcke · ${elapsed} ms.`;
++  } catch (error) {
++    status.className = "status error";
++    status.textContent = "SYSTEMCHECK FEHLGESCHLAGEN";
++    details.textContent = error instanceof Error ? error.message : String(error);
++  } finally {
++    running = false;
++    runButton.disabled = false;
++  }
++}
++
++runButton.addEventListener("click", () => void runSelfTest());
++void runSelfTest();
+--- a/send/main.ts
++++ b/send/main.ts
+@@ -273,9 +273,19 @@
+ });
+ restartBtn.addEventListener("click", () => void startStream());
+ window.addEventListener("resize", () => void startStream());
+-window.addEventListener("decimen-native-pause", () => { paused = true; toggleBtn.textContent = "Fortsetzen"; });
++window.addEventListener("decimen-native-pause", () => {
++  paused = true;
++  toggleBtn.textContent = "Fortsetzen";
++  void wakeLock?.release().catch(() => undefined);
++  wakeLock = null;
++});
+ document.addEventListener("visibilitychange", () => {
+-  if (!document.hidden && !paused) void acquireWakeLock();
++  if (document.hidden) {
++    void wakeLock?.release().catch(() => undefined);
++    wakeLock = null;
++  } else if (!paused) {
++    void acquireWakeLock();
++  }
+ });
+ 
+ void startStream();

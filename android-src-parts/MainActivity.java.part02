@@ -1,0 +1,170 @@
+        });
+    }
+
+    private String resolveDeviceModel() {
+        if (BuildConfig.DEBUG) {
+            String profile = getIntent().getStringExtra(EXTRA_TEST_PROFILE);
+            if ("pixel9a".equals(profile)) return "Pixel 9a";
+            if ("pixel8a".equals(profile)) return "Pixel 8a";
+            if ("tabs5e".equals(profile)) return "SM-T725";
+        }
+        String model = android.os.Build.MODEL;
+        return model == null || model.isBlank() ? "Android" : model;
+    }
+
+    private boolean isAcceptableInput(Uri uri) {
+        if (!"content".equalsIgnoreCase(uri.getScheme())) return false;
+        long size = querySize(uri);
+        return size != 0 && size <= MAX_FILE_BYTES;
+    }
+
+    private long querySize(Uri uri) {
+        try (Cursor cursor = getContentResolver().query(uri,
+                new String[]{OpenableColumns.SIZE}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(OpenableColumns.SIZE);
+                if (index >= 0 && !cursor.isNull(index)) return cursor.getLong(index);
+            }
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Could not query input size", error);
+        }
+        return -1; // JavaScript checks File.size before reading if provider omits the length.
+    }
+
+    private boolean isTrustedOrigin(@Nullable Uri origin) {
+        return origin != null && "https".equalsIgnoreCase(origin.getScheme())
+                && "appassets.androidplatform.net".equalsIgnoreCase(origin.getHost())
+                && (origin.getPort() == -1 || origin.getPort() == 443);
+    }
+
+    private boolean isAppAsset(@Nullable Uri uri) {
+        return isTrustedOrigin(uri) && uri.getPath() != null && uri.getPath().startsWith(ASSET_ROOT);
+    }
+
+    private boolean isAllowedMainNavigation(@Nullable Uri uri) {
+        if (!isAppAsset(uri)) return false;
+        String path = uri.getPath();
+        return (ASSET_ROOT + "index.html").equals(path) || SEND_PATH.equals(path) || RECEIVE_PATH.equals(path);
+    }
+
+    private boolean isSendPage() {
+        Uri uri = currentUri();
+        return uri != null && SEND_PATH.equals(uri.getPath());
+    }
+
+    private boolean isReceivePage() {
+        Uri uri = currentUri();
+        return uri != null && RECEIVE_PATH.equals(uri.getPath());
+    }
+
+    @Nullable
+    private Uri currentUri() {
+        String current = webView == null ? null : webView.getUrl();
+        return current == null ? null : Uri.parse(current);
+    }
+
+    private boolean requestsVideoOnly(String[] resources) {
+        return resources != null && resources.length == 1
+                && PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resources[0]);
+    }
+
+    private static WebResourceResponse blockedResponse() {
+        return new WebResourceResponse("text/plain", "utf-8", 403, "Blocked",
+                Collections.singletonMap("Cache-Control", "no-store"),
+                new ByteArrayInputStream(new byte[0]));
+    }
+
+    private static String sanitizeName(String raw) {
+        String cleaned = raw.replaceAll("[\\x00-\\x1f\\x7f/\\\\]", "_").trim();
+        if (cleaned.isEmpty()) cleaned = "transfer.bin";
+        if (cleaned.length() > 120) cleaned = cleaned.substring(0, 120);
+        return cleaned;
+    }
+
+    private static byte[] sha256(byte[] bytes) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(bytes);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        }
+    }
+
+    private static boolean constantTimeHexEquals(byte[] digest, String expectedHex) {
+        byte[] expected = new byte[digest.length];
+        try {
+            for (int i = 0; i < expected.length; i++) {
+                expected[i] = (byte) Integer.parseInt(expectedHex.substring(i * 2, i * 2 + 2), 16);
+            }
+            return MessageDigest.isEqual(digest, expected);
+        } catch (RuntimeException error) {
+            return false;
+        } finally {
+            Arrays.fill(expected, (byte) 0);
+            Arrays.fill(digest, (byte) 0);
+        }
+    }
+
+    private static String safeMessage(Throwable error) {
+        String message = error.getMessage();
+        return message == null || message.isBlank() ? error.getClass().getSimpleName() : message;
+    }
+
+    @Override
+    protected void onPause() {
+        if (webView != null) {
+            webView.evaluateJavascript("window.dispatchEvent(new Event('decimen-native-pause'));", null);
+            webView.onPause();
+        }
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (webView != null) webView.onResume();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (pendingCameraRequest != null) pendingCameraRequest.deny();
+        pendingCameraRequest = null;
+        if (fileChooserCallback != null) fileChooserCallback.onReceiveValue(null);
+        fileChooserCallback = null;
+        if (pendingSave != null) pendingSave.clear();
+        pendingSave = null;
+        if (readySave != null) readySave.clear();
+        readySave = null;
+        if (webView != null) {
+            webView.stopLoading();
+            webView.loadUrl("about:blank");
+            webView.clearHistory();
+            webView.removeAllViews();
+            webView.destroy();
+            webView = null;
+        }
+        super.onDestroy();
+    }
+
+    WebView getWebViewForTests() {
+        return webView;
+    }
+
+    private final class LockedWebViewClient extends WebViewClient {
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            Uri uri = request.getUrl();
+            if (isAppAsset(uri)) {
+                WebResourceResponse response = assetLoader.shouldInterceptRequest(uri);
+                return response != null ? response : blockedResponse();
+            }
+            String scheme = uri.getScheme();
+            if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)
+                    || "file".equalsIgnoreCase(scheme) || "content".equalsIgnoreCase(scheme)) {
+                return blockedResponse();
+            }
+            return super.shouldInterceptRequest(view, request);
+        }
+
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            if (request.isForMainFrame() && isAllowedMainNavigation(request.getUrl())) return false;
