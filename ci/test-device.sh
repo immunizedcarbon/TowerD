@@ -10,10 +10,16 @@ set -euo pipefail
 : "${RAM:?RAM required}"
 : "${ROTATION:?ROTATION required}"
 
-ROOT="${GITHUB_WORKSPACE:-$(pwd)}"
+# Resolve paths from this checked-out repository, not from GITHUB_WORKSPACE.
+# The workflow may check the source out into a subdirectory.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARTIFACT="$ROOT/final-artifact"
 EVIDENCE="$ROOT/evidence-$PROFILE"
 mkdir -p "$EVIDENCE"
+
+test -s "$ARTIFACT/app-debug.apk"
+test -s "$ARTIFACT/app-debug-androidTest.apk"
+test -s "$ARTIFACT/Decimen-Optical-Transfer-0.3.0-hardened.apk"
 
 SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 AVDMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
