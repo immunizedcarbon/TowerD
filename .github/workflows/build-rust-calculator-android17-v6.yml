@@ -107,10 +107,24 @@ jobs:
       - name: Build signed installable APK
         shell: bash
         working-directory: rust-calculator-android17
+        env:
+          CARGO_APK_RELEASE_KEYSTORE: ${{ runner.temp }}/rust-calculator-release.keystore
+          CARGO_APK_RELEASE_KEYSTORE_PASSWORD: RustCalc37Build
         run: |
           set -euxo pipefail
+          keytool -genkeypair \
+            -keystore "${CARGO_APK_RELEASE_KEYSTORE}" \
+            -storepass "${CARGO_APK_RELEASE_KEYSTORE_PASSWORD}" \
+            -keypass "${CARGO_APK_RELEASE_KEYSTORE_PASSWORD}" \
+            -alias rust-calculator \
+            -keyalg RSA \
+            -keysize 3072 \
+            -validity 10000 \
+            -dname "CN=Rust Calculator Android 17, OU=CI Build, O=Rust Calculator, L=Berlin, ST=Berlin, C=DE"
+
           cargo apk build --release --lib
           find target -type f -name '*.apk' -print
+          rm -f "${CARGO_APK_RELEASE_KEYSTORE}"
 
       - name: Verify and collect APK
         shell: bash
