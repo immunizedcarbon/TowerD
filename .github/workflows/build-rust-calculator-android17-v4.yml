@@ -1,0 +1,121 @@
+name: Build Rust Calculator Android 17 v4
+
+on:
+  push:
+    branches:
+      - "chatgpt/rust-calculator-android17"
+    paths:
+      - "rust-calculator-android17/**"
+      - ".github/workflows/build-rust-calculator-android17-v4.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install Android CLI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          INSTALLER="${RUNNER_TEMP}/install-android-cli.sh"
+          curl --fail --location --retry 5 \
+            --output "${INSTALLER}" \
+            "https://dl.google.com/android/cli/latest/linux_x86_64/install.sh"
+          bash "${INSTALLER}"
+
+          ANDROID_CLI="$(find "${HOME}" -type f -name android -perm -u+x 2>/dev/null | head -n 1)"
+          if [ -z "${ANDROID_CLI}" ]; then
+            ANDROID_CLI="$(command -v android || true)"
+          fi
+          test -x "${ANDROID_CLI}"
+          echo "ANDROID_CLI=${ANDROID_CLI}" >> "${GITHUB_ENV}"
+
+      - name: Install Android 17 SDK and NDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK_ROOT="${RUNNER_TEMP}/android-sdk"
+          mkdir -p "${SDK_ROOT}"
+
+          "${ANDROID_CLI}" --sdk="${SDK_ROOT}" sdk list 'platforms/android-37|build-tools/37|ndk/29|platform-tools' --all-versions || true
+          "${ANDROID_CLI}" --sdk="${SDK_ROOT}" sdk install \
+            platforms/android-37 \
+            build-tools/37.0.0 \
+            platform-tools \
+            ndk/29.0.14206865
+
+          echo "ANDROID_HOME=${SDK_ROOT}" >> "${GITHUB_ENV}"
+          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${SDK_ROOT}/ndk/29.0.14206865" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_HOME=${SDK_ROOT}/ndk/29.0.14206865" >> "${GITHUB_ENV}"
+          echo "${SDK_ROOT}/platform-tools" >> "${GITHUB_PATH}"
+
+          test -f "${SDK_ROOT}/platforms/android-37/android.jar"
+          test -x "${SDK_ROOT}/build-tools/37.0.0/apksigner"
+          test -d "${SDK_ROOT}/ndk/29.0.14206865"
+
+      - name: Install cargo-apk
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo install \
+            --git https://github.com/parasyte/cargo-apk.git \
+            --rev 282639508eeed7d73f2e1eaeea042da2716436d5 \
+            cargo-apk
+
+      - name: Build signed installable APK
+        shell: bash
+        working-directory: rust-calculator-android17
+        run: |
+          set -euxo pipefail
+          cargo apk build --lib
+          find target -type f -name '*.apk' -print
+
+      - name: Verify and collect APK
+        shell: bash
+        working-directory: rust-calculator-android17
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          APK="$(find target -type f -name '*.apk' | head -n 1)"
+          test -n "${APK}"
+          cp "${APK}" dist/RustCalculator-Android17.apk
+
+          "${ANDROID_HOME}/build-tools/37.0.0/apksigner" verify \
+            --verbose \
+            --print-certs \
+            dist/RustCalculator-Android17.apk \
+            | tee dist/signature-verification.txt
+
+          AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort | tail -n 1)"
+          test -x "${AAPT}"
+          "${AAPT}" dump badging \
+            dist/RustCalculator-Android17.apk \
+            | tee dist/apk-badging.txt
+
+          unzip -l dist/RustCalculator-Android17.apk \
+            | tee dist/apk-contents.txt
+
+          sha256sum dist/RustCalculator-Android17.apk \
+            | tee dist/RustCalculator-Android17.apk.sha256
+
+      - name: Upload APK and verification reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustCalculator-Android17
+          path: rust-calculator-android17/dist/*
+          if-no-files-found: error
+          retention-days: 7
