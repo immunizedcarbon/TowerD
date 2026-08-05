@@ -67,10 +67,10 @@ impl CalculatorApp {
         visuals.override_text_color = Some(PRIMARY_TEXT);
         cc.egui_ctx.set_visuals(visuals);
 
-        let mut style = (*cc.egui_ctx.style()).clone();
+        let mut style = (*cc.egui_ctx.style_of(egui::Theme::Dark)).clone();
         style.spacing.item_spacing = egui::vec2(12.0, 12.0);
         style.spacing.button_padding = egui::vec2(14.0, 14.0);
-        cc.egui_ctx.set_style(style);
+        cc.egui_ctx.set_style_of(egui::Theme::Dark, style);
 
         Self {
             display: "0".to_owned(),
