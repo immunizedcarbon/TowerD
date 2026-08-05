@@ -75,12 +75,14 @@ jobs:
           grep '^NDK_MAX_PLATFORM_LEVEL := 37$' \
             "${NDK_ROOT}/build/core/platforms.mk"
 
-          # NDK r29 ships native stubs through API 36. Android 17 does not
-          # remove those symbols, so expose the API-36 stubs under level 37
-          # for Clang's --target=aarch64-linux-android37 lookup.
+          # Expose the newest native stub set under API 37 for Clang's
+          # --target=aarch64-linux-android37 lookup. The app uses only
+          # long-established NativeActivity/OpenGL/Android logging symbols.
           SYSROOT_LIBS="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
-          test -d "${SYSROOT_LIBS}/36"
-          ln -s "36" "${SYSROOT_LIBS}/37"
+          BASE_API="$(find "${SYSROOT_LIBS}" -mindepth 1 -maxdepth 1 -printf '%f\n' | grep -E '^[0-9]+$' | sort -n | tail -n 1)"
+          test -n "${BASE_API}"
+          echo "Using NDK stub API ${BASE_API} for Android API 37"
+          ln -s "${BASE_API}" "${SYSROOT_LIBS}/37"
           test -f "${SYSROOT_LIBS}/37/crtbegin_so.o"
           test -f "${SYSROOT_LIBS}/37/liblog.so"
           test -f "${SYSROOT_LIBS}/37/libandroid.so"
