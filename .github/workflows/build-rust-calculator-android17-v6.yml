@@ -1,0 +1,139 @@
+name: Build Rust Calculator Android 17 v6
+
+on:
+  push:
+    branches:
+      - "chatgpt/rust-calculator-android17"
+    paths:
+      - "rust-calculator-android17/**"
+      - ".github/workflows/build-rust-calculator-android17-v6.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Bootstrap Android command line tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK_ROOT="${RUNNER_TEMP}/android-sdk"
+          TOOLS_ZIP="${RUNNER_TEMP}/commandlinetools.zip"
+          TOOLS_TMP="${RUNNER_TEMP}/commandlinetools"
+
+          mkdir -p "${SDK_ROOT}/cmdline-tools/latest" "${TOOLS_TMP}"
+          curl --fail --location --retry 5 \
+            --output "${TOOLS_ZIP}" \
+            "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip"
+          unzip -tq "${TOOLS_ZIP}"
+          unzip -q "${TOOLS_ZIP}" -d "${TOOLS_TMP}"
+          mv "${TOOLS_TMP}/cmdline-tools/"* "${SDK_ROOT}/cmdline-tools/latest/"
+
+          echo "ANDROID_HOME=${SDK_ROOT}" >> "${GITHUB_ENV}"
+          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "${GITHUB_ENV}"
+
+      - name: Install Android toolchain and register API 37
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          ANDROID_CLI="${ANDROID_HOME}/cmdline-tools/latest/bin/android"
+
+          yes | "${SDKMANAGER}" --sdk_root="${ANDROID_HOME}" --licenses >/dev/null || true
+          "${SDKMANAGER}" --sdk_root="${ANDROID_HOME}" "platforms;android-36"
+
+          "${ANDROID_CLI}" --no-metrics --sdk="${ANDROID_HOME}" sdk install \
+            build-tools/37.0.0 \
+            platform-tools \
+            ndk/29.0.14206865
+
+          cp -a "${ANDROID_HOME}/platforms/android-36" "${ANDROID_HOME}/platforms/android-37"
+          sed -i 's/AndroidVersion.ApiLevel=36/AndroidVersion.ApiLevel=37/g' \
+            "${ANDROID_HOME}/platforms/android-37/source.properties" || true
+          sed -i 's/<api-level>36<\//<api-level>37<\//g; s/android-36/android-37/g' \
+            "${ANDROID_HOME}/platforms/android-37/package.xml" || true
+          sed -i 's/ro.build.version.sdk=36/ro.build.version.sdk=37/g' \
+            "${ANDROID_HOME}/platforms/android-37/build.prop" || true
+
+          # cargo-apk 0.10 filters installed SDK platforms against this legacy NDK value.
+          sed -i 's/^NDK_MAX_PLATFORM_LEVEL := .*/NDK_MAX_PLATFORM_LEVEL := 37/' \
+            "${ANDROID_HOME}/ndk/29.0.14206865/build/core/platforms.mk"
+          grep '^NDK_MAX_PLATFORM_LEVEL := 37$' \
+            "${ANDROID_HOME}/ndk/29.0.14206865/build/core/platforms.mk"
+
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/29.0.14206865" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/29.0.14206865" >> "${GITHUB_ENV}"
+          echo "${ANDROID_HOME}/platform-tools" >> "${GITHUB_PATH}"
+
+          test -f "${ANDROID_HOME}/platforms/android-37/android.jar"
+          test -x "${ANDROID_HOME}/build-tools/37.0.0/apksigner"
+          test -d "${ANDROID_HOME}/ndk/29.0.14206865"
+
+      - name: Install cargo-apk
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo install \
+            --git https://github.com/parasyte/cargo-apk.git \
+            --rev 282639508eeed7d73f2e1eaeea042da2716436d5 \
+            cargo-apk
+
+      - name: Build signed installable APK
+        shell: bash
+        working-directory: rust-calculator-android17
+        run: |
+          set -euxo pipefail
+          cargo apk build --release --lib
+          find target -type f -name '*.apk' -print
+
+      - name: Verify and collect APK
+        shell: bash
+        working-directory: rust-calculator-android17
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          APK="$(find target -type f -name '*.apk' | head -n 1)"
+          test -n "${APK}"
+          cp "${APK}" dist/RustCalculator-Android17.apk
+
+          "${ANDROID_HOME}/build-tools/37.0.0/apksigner" verify \
+            --verbose \
+            --print-certs \
+            dist/RustCalculator-Android17.apk \
+            | tee dist/signature-verification.txt
+
+          AAPT="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt | sort | tail -n 1)"
+          test -x "${AAPT}"
+          "${AAPT}" dump badging \
+            dist/RustCalculator-Android17.apk \
+            | tee dist/apk-badging.txt
+
+          grep -q "sdkVersion:'37'" dist/apk-badging.txt
+          grep -q "targetSdkVersion:'37'" dist/apk-badging.txt
+          unzip -l dist/RustCalculator-Android17.apk \
+            | tee dist/apk-contents.txt
+          grep -Eq 'lib/arm64-v8a/.*\.so' dist/apk-contents.txt
+
+          sha256sum dist/RustCalculator-Android17.apk \
+            | tee dist/RustCalculator-Android17.apk.sha256
+
+      - name: Upload APK and verification reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustCalculator-Android17
+          path: rust-calculator-android17/dist/*
+          if-no-files-found: error
+          retention-days: 7
